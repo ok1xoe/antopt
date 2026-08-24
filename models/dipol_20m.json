@@ -1,0 +1,34 @@
+{
+  "name": "Dipól 20 m ve výšce 12 m",
+  "freq_mhz": 14.1,
+  "wires": [
+    {
+      "x1": -5.025,
+      "y1": 0,
+      "z1": 12.0,
+      "x2": 5.025,
+      "y2": 0,
+      "z2": 12.0,
+      "radius": 0.001,
+      "nseg": 31,
+      "name": ""
+    }
+  ],
+  "sources": [
+    {
+      "wire": 0,
+      "pos": 0.5,
+      "voltage": 1.0,
+      "phase": 0.0
+    }
+  ],
+  "loads": [],
+  "ground": {
+    "kind": "real",
+    "eps_r": 13.0,
+    "sigma": 0.005
+  },
+  "material": "měď",
+  "z0": 50.0,
+  "ground_loss_r": 0.0
+}
