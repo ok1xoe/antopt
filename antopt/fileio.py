@@ -342,10 +342,7 @@ def to_maa(model: Model) -> str:
     out.append("***Source***")
     out.append(str(len(model.sources)))
     for s in model.sources:
-        n = max(1, model.wires[s.wire].nseg)
-        off = int(round(s.pos * n - n / 2.0))
-        tag = f"w{s.wire + 1}c" + (f"{off:+d}" if off else "")
-        out.append(f"{tag}, {s.phase:g}, {s.voltage:g}")
+        out.append(f"{_maa_tag(model, s.wire, s.pos)}, {s.phase:g}, {s.voltage:g}")
     out.append("***Load***")
     out.append(str(len(model.loads)))
     for l in model.loads:
@@ -357,6 +354,17 @@ def to_maa(model: Model) -> str:
     out.append(f"{gtype}, {model.ground.sigma * 1000:g}, {model.ground.eps_r:g}, "
                f"{model.z0:g}, 0, 0, 0")
     return "\n".join(out) + "\n"
+
+
+def _maa_tag(model: Model, wire: int, pos: float) -> str:
+    """Označení polohy na drátu v zápisu MMANA (w1b, w2c, w3c+1, w1e)."""
+    n = max(1, model.wires[wire].nseg)
+    if pos <= 1e-9:
+        return f"w{wire + 1}b"
+    if pos >= 1.0 - 1e-9:
+        return f"w{wire + 1}e"
+    off = int(round(pos * n - n / 2.0))
+    return f"w{wire + 1}c" + (f"{off:+d}" if off else "")
 
 
 def _looks_numeric(line: str) -> bool:

@@ -185,9 +185,13 @@ class Model:
         p = np.array(pts)
         return p.min(axis=0), p.max(axis=0)
 
-    def auto_segment(self, per_wavelength: float = 20.0, min_seg: int = 3,
-                     max_seg: int = 101, force_odd: bool = True) -> None:
-        """Nastaví počet segmentů podle délky drátu vůči vlnové délce."""
+    def auto_segment(self, per_wavelength: float = 45.0, min_seg: int = 5,
+                     max_seg: int = 151, force_odd: bool = True) -> None:
+        """Nastaví počet segmentů podle délky drátu vůči vlnové délce.
+
+        45 segmentů na vlnovou délku je bezpečné minimum — s klasickým
+        pravidlem 20/λ se u lomených antén rozchází reaktance o jednotky ohmů.
+        """
         lam = self.wavelength
         for w in self.wires:
             n = max(min_seg, int(round(per_wavelength * w.length / lam)))

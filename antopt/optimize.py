@@ -19,6 +19,7 @@ from .farfield import performance
 
 PARAM_KINDS = {
     "delka": "Délka drátu (symetricky kolem středu) [m]",
+    "delka_konec": "Délka drátu s pevným koncem (drží spoje) [m]",
     "posun_x": "Poloha drátu podél X (rozteč) [m]",
     "posun_y": "Poloha drátu podél Y [m]",
     "vyska": "Výška (posun drátu v Z) [m]",
@@ -132,7 +133,7 @@ def read_param(model: Model, p: Parameter) -> float:
         return wire_to_polar(w)[1]
     if p.kind == "zenit":
         return wire_to_polar(w)[2]
-    if p.kind == "delka":
+    if p.kind in ("delka", "delka_konec"):
         return w.length
     if p.kind == "posun_x":
         return float(w.center()[0])
@@ -195,6 +196,21 @@ def apply_param(model: Model, p: Parameter, value: float) -> None:
                 ze = float(value)
             nw = polar_to_wire(w.a, L, az, ze, w.radius, w.nseg)
             w.x2, w.y2, w.z2 = nw.x2, nw.y2, nw.z2
+        return
+    if p.kind == "delka_konec":
+        for wi in p.wires:
+            w = model.wires[wi]
+            L = w.length
+            if L <= 0:
+                continue
+            anchor = w.a if p.endpoint == 0 else w.b
+            far = w.b if p.endpoint == 0 else w.a
+            u = (far - anchor) / L
+            new = anchor + u * max(1e-6, float(value))
+            if p.endpoint == 0:
+                w.x2, w.y2, w.z2 = (float(v) for v in new)
+            else:
+                w.x1, w.y1, w.z1 = (float(v) for v in new)
         return
     for wi in p.wires:
         w = model.wires[wi]
@@ -465,14 +481,54 @@ def optimize(base: Model, params: Sequence[Parameter], obj: Objective,
 
 
 # --------------------------------------------------------------------------
+def _shared_endpoint(model: Model, i: int, tol: float) -> Optional[int]:
+    """Vrátí konec drátu i (0/1), kterým se dotýká jiného drátu, jinak None."""
+    wi = model.wires[i]
+    for k, pt in ((0, wi.a), (1, wi.b)):
+        for j, wj in enumerate(model.wires):
+            if j == i:
+                continue
+            if min(np.linalg.norm(pt - wj.a), np.linalg.norm(pt - wj.b)) < tol:
+                return k
+    return None
+
+
 def suggest_parameters(model: Model, span_pct: float = 12.0) -> List[Parameter]:
-    """Rozumná výchozí sada parametrů: délky všech prvků + rozteče (mimo první)."""
+    """Rozumná výchozí sada parametrů: délky drátů + rozteče prvků.
+
+    Dráty, které se někde stýkají, dostanou délku s **pevným spojem**, aby
+    optimalizace geometrii nerozpojila. Stejně dlouhá ramena vycházející
+    ze stejného bodu se automaticky sváží, takže zůstanou symetrická.
+    """
     out: List[Parameter] = []
+    tol = max(1e-9, model.wavelength * 1e-6)
+    anchors: List[Optional[int]] = []
     for i, w in enumerate(model.wires):
         L = w.length
-        out.append(Parameter("delka", [i], L * (1 - span_pct / 100),
-                             L * (1 + span_pct / 100),
-                             label=f"Délka drátu {i + 1}"))
+        anc = _shared_endpoint(model, i, tol)
+        anchors.append(anc)
+        if anc is None:
+            out.append(Parameter("delka", [i], L * (1 - span_pct / 100),
+                                 L * (1 + span_pct / 100),
+                                 label=f"Délka drátu {i + 1}"))
+        else:
+            out.append(Parameter("delka_konec", [i], L * (1 - span_pct / 100),
+                                 L * (1 + span_pct / 100), endpoint=anc,
+                                 label=f"Délka drátu {i + 1} (spoj drží)"))
+
+    # svázat stejně dlouhá ramena vycházející ze společného bodu
+    for i in range(len(model.wires)):
+        if anchors[i] is None or out[i].link is not None:
+            continue
+        pi = model.wires[i].a if anchors[i] == 0 else model.wires[i].b
+        for j in range(i + 1, len(model.wires)):
+            if anchors[j] is None or out[j].link is not None:
+                continue
+            pj = model.wires[j].a if anchors[j] == 0 else model.wires[j].b
+            if (np.linalg.norm(pi - pj) < tol
+                    and abs(model.wires[i].length - model.wires[j].length) < tol * 1e3):
+                out[j].link = i
+                out[j].label = f"Délka drátu {j + 1} (= drát {i + 1})"
     xs = np.array([float(w.center()[0]) for w in model.wires])
     if len(np.unique(np.round(xs, 6))) > 1:
         lam = model.wavelength
