@@ -177,8 +177,14 @@ def _hemisphere_grid(ground: bool, n_th: int = 91, n_ph: int = 181):
     return TH, PH
 
 
-def performance(sol: Solution, n_th: int = 91, n_ph: int = 181) -> Performance:
-    """Zisk, F/B, směr maxima, šířky svazků, účinnost."""
+def performance(sol: Solution, n_th: int = 91, n_ph: int = 181,
+                fb_sector_deg: float = 0.0) -> Performance:
+    """Zisk, F/B, směr maxima, šířky svazků, účinnost.
+
+    ``fb_sector_deg`` > 0 počítá F/B jako v MMANA — proti nejsilnějšímu
+    laloku v zadaném zadním výseku (MMANA má ve výchozím stavu 120°).
+    Nula znamená klasické porovnání s přesně opačným směrem.
+    """
     grounded = sol.model.ground.kind != "free"
     TH, PH = _hemisphere_grid(grounded, n_th, n_ph)
     pat = far_field(sol, TH, PH)
@@ -189,14 +195,19 @@ def performance(sol: Solution, n_th: int = 91, n_ph: int = 181) -> Performance:
     th0 = float(TH[i])
     ph0 = float(PH[i])
 
-    # zpětný lalok: opačný azimut, stejná elevace
-    ph_back = (ph0 + math.pi) % (2 * math.pi)
-    gb = float(far_field(sol, np.array([th0]), np.array([ph_back])).gain_dbi[0])
+    # zpětný lalok
+    dphi_all = np.abs(((PH - ph0 + math.pi) % (2 * math.pi)) - math.pi)
+    if fb_sector_deg and fb_sector_deg > 0:
+        half = math.radians(fb_sector_deg) / 2.0
+        rear = dphi_all >= (math.pi - half)
+        gb = float(np.max(g[rear])) if np.any(rear) else float("-inf")
+    else:
+        ph_back = (ph0 + math.pi) % (2 * math.pi)
+        gb = float(far_field(sol, np.array([th0]), np.array([ph_back])).gain_dbi[0])
     fb = gmax - gb
 
     # nejhorší (největší) postranní/zadní lalok mimo ±60° od maxima
-    dphi = np.abs(((PH - ph0 + math.pi) % (2 * math.pi)) - math.pi)
-    mask = dphi > math.radians(60.0)
+    mask = dphi_all > math.radians(60.0)
     fs = gmax - float(np.max(g[mask])) if np.any(mask) else float("nan")
 
     # šířky svazků v -3 dB

@@ -31,9 +31,9 @@ class Result:
 
 
 def analyse(model: Model, n_th: int = 91, n_ph: int = 181,
-            keep_solution: bool = True) -> Result:
+            keep_solution: bool = True, fb_sector_deg: float = 0.0) -> Result:
     sol = solve(model)
-    p = performance(sol, n_th=n_th, n_ph=n_ph)
+    p = performance(sol, n_th=n_th, n_ph=n_ph, fb_sector_deg=fb_sector_deg)
     return Result(
         freq_mhz=model.freq_mhz,
         zin=sol.zin,
@@ -102,3 +102,61 @@ def bandwidth(results: Sequence[Result], swr_limit: float = 2.0):
     f_lo = interp(lo, lo - 1) if lo > 0 else f[0]
     f_hi = interp(hi, hi + 1) if hi < len(s) - 1 else f[-1]
     return f_lo, f_hi, (f_hi - f_lo) * 1000.0
+
+
+def find_resonance(model: Model, f_lo: Optional[float] = None,
+                   f_hi: Optional[float] = None, tol: float = 1e-5):
+    """Najde nejbližší kmitočet, kde je reaktance nulová (Plots → Resonance).
+
+    Vrací (f [MHz], Z) nebo None, když v rozsahu rezonance není.
+    """
+    f0 = model.freq_mhz
+    f_lo = f_lo if f_lo else f0 * 0.80
+    f_hi = f_hi if f_hi else f0 * 1.20
+    work = model.copy()
+
+    def x_at(f: float) -> float:
+        work.freq_mhz = f
+        return solve(work).zin.imag
+
+    # hrubé prohledání od středu ven
+    fs = np.concatenate([np.linspace(f0, f_hi, 60), np.linspace(f0, f_lo, 60)[1:]])
+    prev_f, prev_x = None, None
+    brackets = []
+    for arm in (np.linspace(f0, f_hi, 60), np.linspace(f0, f_lo, 60)):
+        prev_f, prev_x = None, None
+        for f in arm:
+            x = x_at(float(f))
+            if prev_x is not None and prev_x * x <= 0:
+                brackets.append((prev_f, prev_x, float(f), x))
+                break
+            prev_f, prev_x = float(f), x
+    if not brackets:
+        return None
+    brackets.sort(key=lambda b: abs(0.5 * (b[0] + b[2]) - f0))
+    a, xa, b, xb = brackets[0]
+    for _ in range(60):
+        m = 0.5 * (a + b)
+        xm = x_at(m)
+        if abs(xm) < 1e-6 or (b - a) < tol:
+            break
+        if xa * xm <= 0:
+            b, xb = m, xm
+        else:
+            a, xa = m, xm
+    fr = 0.5 * (a + b)
+    work.freq_mhz = fr
+    return fr, solve(work).zin
+
+
+def q_factor(model: Model, delta_rel: float = 0.005) -> float:
+    """Provozní činitel jakosti Q = (f/2R)·dX/df."""
+    work = model.copy()
+    f0 = model.freq_mhz
+    work.freq_mhz = f0 * (1 - delta_rel); z1 = solve(work).zin
+    work.freq_mhz = f0 * (1 + delta_rel); z2 = solve(work).zin
+    work.freq_mhz = f0; z0 = solve(work).zin
+    dxdf = (z2.imag - z1.imag) / (2 * delta_rel * f0)
+    if z0.real <= 0:
+        return float("nan")
+    return abs(f0 / (2 * z0.real) * dxdf)

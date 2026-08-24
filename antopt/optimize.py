@@ -18,12 +18,25 @@ from .solver import solve, swr_from_z
 from .farfield import performance
 
 PARAM_KINDS = {
-    "delka": "Délka prvku (symetricky kolem středu) [m]",
-    "posun_x": "Poloha prvku podél X (rozteč) [m]",
-    "posun_y": "Poloha prvku podél Y [m]",
-    "vyska": "Výška (posun celého drátu v Z) [m]",
+    "delka": "Délka drátu (symetricky kolem středu) [m]",
+    "posun_x": "Poloha drátu podél X (rozteč) [m]",
+    "posun_y": "Poloha drátu podél Y [m]",
+    "vyska": "Výška (posun drátu v Z) [m]",
     "polomer": "Poloměr vodiče [m]",
     "souradnice": "Jedna souřadnice jednoho konce [m]",
+    "prvek_delka": "Délka celého prvku i se zúžením [m]",
+    "prvek_x": "Poloha celého prvku podél X [m]",
+    "prvek_y": "Poloha celého prvku podél Y [m]",
+    "prvek_z": "Poloha celého prvku podél Z [m]",
+    "azimut": "Azimut drátu [°]",
+    "zenit": "Zenitový úhel drátu [°]",
+    "zatez_r": "Zátěž — R [Ω]",
+    "zatez_x": "Zátěž — X [Ω]",
+    "zatez_l": "Zátěž — L [µH]",
+    "zatez_c": "Zátěž — C [pF]",
+    "zdroj_u": "Zdroj — napětí [V]",
+    "zdroj_faze": "Zdroj — fáze [°]",
+    "vyska_vse": "Výška celé antény [m]",
 }
 
 
@@ -36,16 +49,89 @@ class Parameter:
     endpoint: int = 0          # jen pro 'souradnice': 0 = první bod, 1 = druhý
     axis: int = 0              # jen pro 'souradnice': 0=x,1=y,2=z
     label: str = ""
+    step: float = 0.0          # nejmenší krok (0 = spojitě)
+    link: Optional[int] = None     # index svázaného parametru
+    link_factor: float = 1.0       # hodnota = factor * odkaz + offset
+    link_offset: float = 0.0
 
     def describe(self) -> str:
         if self.label:
             return self.label
         w = "+".join(str(i + 1) for i in self.wires)
-        return f"{PARAM_KINDS.get(self.kind, self.kind)} – drát {w}"
+        return f"{PARAM_KINDS.get(self.kind, self.kind)} – {w}"
+
+    def linked_to(self) -> str:
+        if self.link is None:
+            return ""
+        f, o = self.link_factor, self.link_offset
+        txt = f"#{self.link + 1}"
+        if f != 1.0:
+            txt = f"{f:g}×{txt}"
+        if o:
+            txt += f" {o:+g}"
+        return txt
+
+
+def expand_values(params: Sequence[Parameter], free_values: Sequence[float]) -> List[float]:
+    """Doplní hodnoty svázaných parametrů z jejich odkazů."""
+    vals: List[Optional[float]] = [None] * len(params)
+    it = iter(free_values)
+    for i, p in enumerate(params):
+        if p.link is None:
+            vals[i] = float(next(it))
+    for _ in range(len(params)):
+        done = True
+        for i, p in enumerate(params):
+            if vals[i] is None:
+                src = vals[p.link] if p.link is not None and 0 <= p.link < len(params) else None
+                if src is None:
+                    done = False
+                else:
+                    vals[i] = p.link_factor * src + p.link_offset
+        if done:
+            break
+    return [0.0 if v is None else float(v) for v in vals]
+
+
+def free_params(params: Sequence[Parameter]) -> List[int]:
+    return [i for i, p in enumerate(params) if p.link is None]
+
+
+def _element_of(model: Model, idx: Sequence[int]):
+    from .geometry_ops import find_elements
+    want = set(idx)
+    for el in find_elements(model):
+        if want & set(el.wires):
+            return el
+    return None
 
 
 def read_param(model: Model, p: Parameter) -> float:
+    from .geometry_ops import wire_to_polar
+    if p.kind == "kmitocet":
+        return model.freq_mhz
+    if p.kind == "vyska_vse":
+        lo, hi = model.bounds()
+        return float((lo[2] + hi[2]) / 2.0)
+    if p.kind.startswith("zatez_"):
+        ld = model.loads[p.wires[0]]
+        return {"zatez_r": ld.r, "zatez_x": ld.x,
+                "zatez_l": ld.l_uh, "zatez_c": ld.c_pf}[p.kind]
+    if p.kind.startswith("zdroj_"):
+        s_ = model.sources[p.wires[0]]
+        return s_.voltage if p.kind == "zdroj_u" else s_.phase
+    if p.kind.startswith("prvek_"):
+        el = _element_of(model, p.wires)
+        if el is None:
+            return 0.0
+        if p.kind == "prvek_delka":
+            return el.length
+        return float(el.center[{"prvek_x": 0, "prvek_y": 1, "prvek_z": 2}[p.kind]])
     w = model.wires[p.wires[0]]
+    if p.kind == "azimut":
+        return wire_to_polar(w)[1]
+    if p.kind == "zenit":
+        return wire_to_polar(w)[2]
     if p.kind == "delka":
         return w.length
     if p.kind == "posun_x":
@@ -62,6 +148,54 @@ def read_param(model: Model, p: Parameter) -> float:
 
 
 def apply_param(model: Model, p: Parameter, value: float) -> None:
+    from .geometry_ops import (set_element_length, set_element_position,
+                               wire_to_polar, polar_to_wire, move)
+    if p.kind == "kmitocet":
+        model.freq_mhz = max(0.001, float(value))
+        return
+    if p.kind == "vyska_vse":
+        cur = read_param(model, p)
+        move(model, dz=value - cur)
+        return
+    if p.kind.startswith("zatez_"):
+        for li in p.wires:
+            if 0 <= li < len(model.loads):
+                ld = model.loads[li]
+                setattr(ld, {"zatez_r": "r", "zatez_x": "x",
+                             "zatez_l": "l_uh", "zatez_c": "c_pf"}[p.kind],
+                        float(value))
+        return
+    if p.kind.startswith("zdroj_"):
+        for si in p.wires:
+            if 0 <= si < len(model.sources):
+                s_ = model.sources[si]
+                if p.kind == "zdroj_u":
+                    s_.voltage = float(value)
+                else:
+                    s_.phase = float(value)
+        return
+    if p.kind.startswith("prvek_"):
+        el = _element_of(model, p.wires)
+        if el is None:
+            return
+        if p.kind == "prvek_delka":
+            set_element_length(model, el, max(1e-6, float(value)))
+        else:
+            set_element_position(model, el,
+                                 {"prvek_x": "x", "prvek_y": "y", "prvek_z": "z"}[p.kind],
+                                 float(value))
+        return
+    if p.kind in ("azimut", "zenit"):
+        for wi in p.wires:
+            w = model.wires[wi]
+            L, az, ze = wire_to_polar(w)
+            if p.kind == "azimut":
+                az = float(value)
+            else:
+                ze = float(value)
+            nw = polar_to_wire(w.a, L, az, ze, w.radius, w.nseg)
+            w.x2, w.y2, w.z2 = nw.x2, nw.y2, nw.z2
+        return
     for wi in p.wires:
         w = model.wires[wi]
         if p.kind == "delka":
@@ -110,10 +244,14 @@ class Objective:
     w_swr: float = 2.0
     w_r: float = 0.0
     w_x: float = 0.0
+    w_elev: float = 0.0         # kladné = tlač úhel vyzařování dolů
+    w_current: float = 0.0      # kladné = maximalizuj proud v zadaném bodě
+    current_at: Optional[tuple] = None   # (drát, poloha 0..1)
     target_swr: float = 1.5
     target_r: float = 50.0
     target_x: float = 0.0
     fb_cap: float = 25.0        # nad tímhle F/B už se nevyplácí honit další dB
+    fb_sector_deg: float = 0.0  # >0 = F/B v zadním výseku jako v MMANA
     elevation_deg: Optional[float] = None    # None = maximum přes celý poloprostor
     n_th: int = 37
     n_ph: int = 73
@@ -130,10 +268,11 @@ class Evaluation:
     def summary(self) -> str:
         parts = []
         for d in self.detail:
-            parts.append(
-                f"{d['f']:.3f} MHz: G={d['gain']:.2f} dBi  F/B={d['fb']:.1f} dB  "
-                f"PSV={d['swr']:.2f}  Z={d['r']:.1f}{d['x']:+.1f}j"
-            )
+            txt = (f"{d['f']:.3f} MHz: G={d['gain']:.2f} dBi  F/B={d['fb']:.1f} dB  "
+                   f"PSV={d['swr']:.2f}  Z={d['r']:.1f}{d['x']:+.1f}j")
+            if np.isfinite(d.get("elev", float("nan"))):
+                txt += f"  el={d['elev']:.1f}°"
+            parts.append(txt)
         return "\n".join(parts)
 
 
@@ -151,10 +290,14 @@ def evaluate(model: Model, obj: Objective) -> Evaluation:
         if not np.isfinite(z.real) or not np.isfinite(z.imag):
             return Evaluation(1e6, [])
         s = swr_from_z(z, work.z0)
-        need_pattern = obj.w_gain != 0 or obj.w_fb != 0 or obj.w_fs != 0
+        need_pattern = (obj.w_gain != 0 or obj.w_fb != 0 or obj.w_fs != 0
+                        or obj.w_elev != 0)
+        elev = float("nan")
         if need_pattern:
-            p = performance(sol, n_th=obj.n_th, n_ph=obj.n_ph)
+            p = performance(sol, n_th=obj.n_th, n_ph=obj.n_ph,
+                            fb_sector_deg=obj.fb_sector_deg)
             gain, fb, fs = p.gain_dbi, p.fb_db, p.fs_db
+            elev = p.elevation_deg
             if obj.elevation_deg is not None:
                 from .farfield import far_field
                 th = np.radians(90.0 - obj.elevation_deg)
@@ -163,6 +306,17 @@ def evaluate(model: Model, obj: Objective) -> Evaluation:
                 gain = float(np.max(pat.gain_dbi))
         else:
             gain = fb = fs = 0.0
+
+        cur = float("nan")
+        if obj.w_current and obj.current_at:
+            try:
+                from .mesh import node_for_position
+                wi, pos = obj.current_at
+                node = node_for_position(sol.mesh, work, int(wi), float(pos))
+                bi = sol.mesh.basis_at_node(node)
+                cur = float(abs(sol.currents[bi])) if bi >= 0 else float("nan")
+            except Exception:
+                cur = float("nan")
 
         c = 0.0
         c -= obj.w_gain * gain
@@ -175,9 +329,14 @@ def evaluate(model: Model, obj: Objective) -> Evaluation:
             c += obj.w_r * abs(z.real - obj.target_r) / 10.0
         if obj.w_x:
             c += obj.w_x * abs(z.imag - obj.target_x) / 10.0
+        if obj.w_elev and np.isfinite(elev):
+            c += obj.w_elev * elev / 10.0
+        if obj.w_current and np.isfinite(cur):
+            c -= obj.w_current * 20.0 * math.log10(max(cur, 1e-12))
         cost += c
         detail.append({"f": f, "gain": gain, "fb": fb, "fs": fs,
-                       "swr": s, "r": z.real, "x": z.imag})
+                       "swr": s, "r": z.real, "x": z.imag,
+                       "elev": elev, "cur": cur})
     return Evaluation(cost / max(1, len(detail)), detail)
 
 
@@ -202,22 +361,35 @@ def optimize(base: Model, params: Sequence[Parameter], obj: Objective,
     ``progress(gen, total, best_cost, text)`` může vrátit False pro přerušení.
     """
     rng = np.random.default_rng(seed)
-    n = len(params)
-    if n == 0:
-        ev = evaluate(base, obj)
-        return OptResult(base, [], ev.cost, [ev.cost], ev, 0)
+    fidx = free_params(params)
+    n = len(fidx)
+    if not params or n == 0:
+        vals = expand_values(params, [])
+        m = build_candidate(base, params, vals) if params else base
+        ev = evaluate(m, obj)
+        return OptResult(m, vals, ev.cost, [ev.cost], ev, 0)
 
-    lo = np.array([p.lo for p in params], dtype=float)
-    hi = np.array([p.hi for p in params], dtype=float)
-    x0 = np.array([np.clip(read_param(base, p), p.lo, p.hi) for p in params])
+    lo = np.array([params[i].lo for i in fidx], dtype=float)
+    hi = np.array([params[i].hi for i in fidx], dtype=float)
+    x0 = np.array([np.clip(read_param(base, params[i]), params[i].lo, params[i].hi)
+                   for i in fidx])
+    steps = np.array([params[i].step for i in fidx], dtype=float)
+
+    def quantise(x: np.ndarray) -> np.ndarray:
+        out = np.array(x, dtype=float)
+        m = steps > 0
+        if np.any(m):
+            out[m] = np.round(out[m] / steps[m]) * steps[m]
+        return np.clip(out, lo, hi)
 
     cache: dict = {}
 
     def cost_of(x: np.ndarray) -> float:
-        key = tuple(np.round(x, 6))
+        x = quantise(x)
+        key = tuple(np.round(x, 8))
         if key in cache:
             return cache[key]
-        m = build_candidate(base, params, x)
+        m = build_candidate(base, params, expand_values(params, x))
         c = evaluate(m, obj).cost
         cache[key] = c
         return c
@@ -267,7 +439,7 @@ def optimize(base: Model, params: Sequence[Parameter], obj: Objective,
                 break
 
     ib = int(np.argmin(fit))
-    xbest = pop[ib].copy()
+    xbest = quantise(pop[ib].copy())
     iters = len(cache)
 
     if polish:
@@ -278,15 +450,16 @@ def optimize(base: Model, params: Sequence[Parameter], obj: Objective,
                        options={"xatol": 1e-5, "fatol": 1e-4,
                                 "maxiter": 60 * n, "initial_simplex": None})
         if res.fun < fit[ib]:
-            xbest = np.clip(res.x, lo, hi)
+            xbest = quantise(res.x)
         history.append(float(min(res.fun, fit[ib])))
         iters = len(cache)
         if progress is not None:
             progress(total, total, float(history[-1]), "doladění hotovo")
 
-    best_model = build_candidate(base, params, xbest)
+    full = expand_values(params, xbest)
+    best_model = build_candidate(base, params, full)
     ev = evaluate(best_model, obj)
-    return OptResult(model=best_model, values=[float(v) for v in xbest],
+    return OptResult(model=best_model, values=[float(v) for v in full],
                      cost=ev.cost, history=history, evaluation=ev,
                      iterations=iters)
 
