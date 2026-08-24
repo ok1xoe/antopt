@@ -121,6 +121,14 @@ class LcMatch:
     shunt_l_uh: Optional[float]
     shunt_c_pf: Optional[float]
     q: float
+    shunt_at_source: bool = True    # paralelní prvek na straně Z₀?
+
+    def input_impedance(self, z_load: complex) -> complex:
+        """Impedance článku se zátěží — podle jeho topologie."""
+        if self.shunt_at_source:
+            return 1.0 / (1.0 / (z_load + 1j * self.x_series)
+                          + 1.0 / (1j * self.x_shunt))
+        return 1.0 / (1.0 / z_load + 1.0 / (1j * self.x_shunt)) + 1j * self.x_series
 
     def report(self, freq_mhz: float) -> str:
         def part(x, l, c):
@@ -137,45 +145,56 @@ class LcMatch:
 
 def lc_match(z_load: complex, z0: float = 50.0, freq_mhz: float = 14.0
              ) -> List[LcMatch]:
-    """Návrh L-článku pro přizpůsobení zátěže na Z₀. Vrací obě řešení."""
+    """Návrh L-článku pro přizpůsobení zátěže na Z₀.
+
+    Zkusí obě topologie i obě znaménka a vrátí jen ta řešení, která opravdu
+    vyjdou na Z₀ (ověřeno dopočtem).
+    """
     rl, xl = z_load.real, z_load.imag
-    if rl <= 0:
+    if rl <= 0 or z0 <= 0:
         return []
     out: List[LcMatch] = []
 
-    def make(topology, xs, xsh):
-        return LcMatch(
+    def add(topology: str, xs: float, xsh: float, q: float,
+            at_source: bool) -> None:
+        if not (math.isfinite(xs) and math.isfinite(xsh)) or xs == 0 or xsh == 0:
+            return
+        cand = LcMatch(
             topology=topology, x_series=xs, x_shunt=xsh,
             series_l_uh=l_for_reactance(xs, freq_mhz) if xs > 0 else None,
             series_c_pf=c_for_reactance(xs, freq_mhz) if xs < 0 else None,
             shunt_l_uh=l_for_reactance(xsh, freq_mhz) if xsh > 0 else None,
             shunt_c_pf=c_for_reactance(xsh, freq_mhz) if xsh < 0 else None,
-            q=math.sqrt(max(abs(max(rl, z0) / min(rl, z0) - 1.0), 0.0)),
-        )
+            q=q, shunt_at_source=at_source)
+        if swr_from_z(cand.input_impedance(z_load), z0) > 1.02:
+            return
+        for o in out:
+            if (abs(o.x_series - xs) < 1e-6 and abs(o.x_shunt - xsh) < 1e-6
+                    and o.shunt_at_source == at_source):
+                return
+        out.append(cand)
 
-    if rl < z0:
-        # paralelní prvek u generátoru, sériový u zátěže
-        q = math.sqrt(z0 / rl - 1.0)
-        for sgn in (+1.0, -1.0):
-            xs = sgn * q * rl - xl
-            xsh = -sgn * z0 / q
-            out.append(make("paralelní prvek na straně 50 Ω, sériový k anténě",
-                            xs, xsh))
-    else:
-        # paralelní prvek u zátěže
-        # nejdřív sériově vykompenzuj X, pak transformuj R
-        q = math.sqrt(max(rl / z0 - 1.0, 0.0))
-        if q == 0:
-            return out
-        for sgn in (+1.0, -1.0):
-            xsh = sgn * rl * (1.0 + (xl / rl) ** 2) / (q + xl / rl) if (q + xl / rl) != 0 else sgn * rl / q
-            # paralelní prvek přes zátěž, pak sériový dorovná zbytek
-            y = 1.0 / z_load + 1.0 / (1j * xsh)
-            z_after = 1.0 / y
-            xs = -z_after.imag
-            if abs(z_after.real - z0) / z0 < 0.05:
-                out.append(make("paralelní prvek na straně antény, sériový k 50 Ω",
-                                xs, xsh))
+    # (a) paralelní prvek u zdroje (50 Ω), sériový k anténě — jde když R <= Z0
+    disc = z0 * rl - rl * rl
+    if disc >= 0:
+        q = math.sqrt(z0 / rl - 1.0) if rl < z0 else 0.0
+        if q > 0:
+            for sgn in (+1.0, -1.0):
+                add("paralelní prvek na straně 50 Ω, sériový k anténě",
+                    sgn * q * rl - xl, -sgn * z0 / q, q, True)
+
+    # (b) paralelní prvek u antény, sériový k 50 Ω — jde když R²+X² >= Z0·R
+    g = rl / (rl * rl + xl * xl)
+    bl = -xl / (rl * rl + xl * xl)
+    if 0 < g <= 1.0 / z0:
+        q = math.sqrt(max(1.0 / (g * z0) - 1.0, 0.0))
+        if q > 0:
+            for sgn in (+1.0, -1.0):
+                b = sgn * g * q - bl
+                if b == 0:
+                    continue
+                add("paralelní prvek na straně antény, sériový k 50 Ω",
+                    sgn * q * z0, -1.0 / b, q, False)
     return out
 
 
@@ -250,11 +269,11 @@ def single_stub_match(z_load: complex, z0: float = 50.0, freq_mhz: float = 14.0,
         y = 1.0 / z
         g = y.real * z0
         f = g - 1.0
-        if prev is not None and prev[1] * f <= 0 and abs(f) < 1.0:
+        if prev is not None and prev[1] * f <= 0:
             d0 = prev[0] + (0.0 - prev[1]) * (d - prev[0]) / (f - prev[1]) if f != prev[1] else d
             z0p = transform_along_line(z_load, z0, float(d0), freq_mhz, vf_main)
             b = (1.0 / z0p).imag
-            x_needed = -1.0 / b if b != 0 else float("inf")
+            x_needed = 1.0 / b if b != 0 else float("inf")
             if math.isfinite(x_needed):
                 ls = stub_length_for_reactance(x_needed, z0_stub, freq_mhz,
                                                vf_stub, shorted)

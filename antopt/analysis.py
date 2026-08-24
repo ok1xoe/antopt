@@ -149,14 +149,45 @@ def find_resonance(model: Model, f_lo: Optional[float] = None,
     return fr, solve(work).zin
 
 
-def q_factor(model: Model, delta_rel: float = 0.005) -> float:
-    """Provozní činitel jakosti Q = (f/2R)·dX/df."""
+def q_factor(model: Model, delta_rel: float = 0.01) -> float:
+    """Činitel jakosti napájecího bodu podle Yaghjiana–Besta:
+
+        Q = (ω₀ / 2R₀) · |dR/dω + j(dX/dω + |X₀|/ω₀)|
+
+    Bere v úvahu i změnu odporu, takže nezkolabuje tam, kde má reaktance
+    inflexi — na rozdíl od prostého (ω/2R)·dX/dω. Pro skutečnou šířku pásma
+    použij rozmítání kmitočtu, Q je jen rychlý odhad.
+    """
     work = model.copy()
     f0 = model.freq_mhz
     work.freq_mhz = f0 * (1 - delta_rel); z1 = solve(work).zin
     work.freq_mhz = f0 * (1 + delta_rel); z2 = solve(work).zin
     work.freq_mhz = f0; z0 = solve(work).zin
-    dxdf = (z2.imag - z1.imag) / (2 * delta_rel * f0)
     if z0.real <= 0:
         return float("nan")
-    return abs(f0 / (2 * z0.real) * dxdf)
+    df = 2 * delta_rel * f0
+    drdf = (z2.real - z1.real) / df
+    dxdf = (z2.imag - z1.imag) / df
+    zp = complex(drdf, dxdf + abs(z0.imag) / f0)
+    return float(f0 / (2 * z0.real) * abs(zp))
+
+
+def q_estimate(model: Model):
+    """Q se dvěma šířkami kroku. Vrací (Q, spolehlivé?, Q_min, Q_max).
+
+    U antén záměrně zploštělých přes celé pásmo je lokální derivace impedance
+    malá a Q silně závisí na kroku — pak je jediné poctivé číslo šířka pásma
+    z rozmítání, ne Q.
+    """
+    qs = []
+    for d in (0.005, 0.02):
+        try:
+            qs.append(q_factor(model, d))
+        except Exception:
+            pass
+    qs = [q for q in qs if np.isfinite(q)]
+    if not qs:
+        return float("nan"), False, float("nan"), float("nan")
+    lo, hi = min(qs), max(qs)
+    ok = hi <= 1.5 * max(lo, 1e-9)
+    return (0.5 * (lo + hi) if not ok else qs[0]), ok, lo, hi

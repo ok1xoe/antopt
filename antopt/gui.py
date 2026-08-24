@@ -26,7 +26,11 @@ from .analysis import analyse, sweep, bandwidth, Result
 from .fileio import to_nec, from_nec, to_maa, from_maa
 from .examples import EXAMPLES
 from .optimize import (Parameter, Objective, optimize, evaluate,
-                       suggest_parameters, read_param, PARAM_KINDS)
+                       suggest_parameters, read_param, PARAM_KINDS, free_params)
+from . import dialogs as dlg
+from . import geometry_ops as go
+from . import wizards as wz
+from .analysis import find_resonance, q_factor, q_estimate
 
 PAD = 6
 
@@ -243,10 +247,43 @@ class App(ttk.Frame):
         f.add_command(label="Konec", command=self.master.destroy)
         m.add_cascade(label="Soubor", menu=f)
 
-        ex = tk.Menu(m, tearoff=0)
+        nw = tk.Menu(m, tearoff=0)
+        nw.add_command(label="Průvodce novou anténou…", command=self.run_wizard)
+        nw.add_separator()
+        ex = tk.Menu(nw, tearoff=0)
         for name in EXAMPLES:
             ex.add_command(label=name, command=lambda n=name: self.load_example(n))
-        m.add_cascade(label="Příklady", menu=ex)
+        nw.add_cascade(label="Hotové příklady", menu=ex)
+        m.add_cascade(label="Nová anténa", menu=nw)
+
+        ed = tk.Menu(m, tearoff=0)
+        ed.add_command(label="Posunout…", command=lambda: self._edit_op(dlg.move_dialog))
+        ed.add_command(label="Otočit…", command=lambda: self._edit_op(dlg.rotate_dialog))
+        ed.add_command(label="Zrcadlit…", command=lambda: self._edit_op(dlg.mirror_dialog))
+        ed.add_command(label="Změnit měřítko…", command=lambda: self._edit_op(dlg.scale_dialog))
+        ed.add_separator()
+        ed.add_command(label="Přeladit na jiný kmitočet…", command=self.op_rescale)
+        ed.add_command(label="Vytvořit stoh / řadu…", command=self.op_stack)
+        ed.add_separator()
+        ed.add_command(label="Zúžený (teleskopický) prvek…", command=self.op_taper)
+        ed.add_command(label="Přidat drát polárně…", command=self.op_polar)
+        ed.add_command(label="Editor prvků…", command=self.op_elements)
+        m.add_cascade(label="Úpravy", menu=ed)
+
+        tl = tk.Menu(m, tearoff=0)
+        tl.add_command(label="Rezonance a cívky…",
+                       command=lambda: dlg.resonance_dialog(self.master, self.model.freq_mhz))
+        tl.add_command(label="LC přizpůsobovací článek…",
+                       command=lambda: dlg.lc_match_dialog(self.master, self._zin(),
+                                                           self.model.freq_mhz, self.model.z0))
+        tl.add_command(label="Přizpůsobení vedením (pahýl, sekce)…",
+                       command=lambda: dlg.line_match_dialog(self.master, self._zin(),
+                                                             self.model.freq_mhz, self.model.z0))
+        tl.add_command(label="Napáječ a jeho ztráty…",
+                       command=lambda: dlg.feedline_dialog(self.master, self._zin(),
+                                                           self.model.freq_mhz, self.model.z0))
+        tl.add_command(label="Vlásenka (hairpin)…", command=self.match_dialog)
+        m.add_cascade(label="Nástroje", menu=tl)
 
         h = tk.Menu(m, tearoff=0)
         h.add_command(label="O programu / omezení modelu", command=self.show_about)
@@ -412,15 +449,37 @@ class App(ttk.Frame):
         ttk.Button(top, text="Rozmítat", command=self.do_sweep).pack(side="left", padx=4)
         ttk.Button(top, text="Kolem kmitočtu ±5 %",
                    command=self.sweep_around).pack(side="left")
+        ttk.Button(top, text="Rezonance", command=self.do_resonance).pack(side="left", padx=4)
         ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
+        ttk.Label(top, text="F/B výsek [°]:").pack(side="left")
+        self.var_fbsec = tk.StringVar(value="0")
+        ttk.Combobox(top, textvariable=self.var_fbsec, width=5, state="readonly",
+                     values=["0", "60", "90", "120", "180"]).pack(side="left", padx=3)
         ttk.Button(top, text="Návrh přizpůsobení…",
-                   command=self.match_dialog).pack(side="left")
+                   command=self.match_dialog).pack(side="left", padx=6)
 
         body = ttk.Frame(tab)
         body.pack(fill="both", expand=True, pady=PAD)
-        self.txt_res = tk.Text(body, width=42, height=20, wrap="none")
-        self.txt_res.pack(side="left", fill="y")
+        left = ttk.Frame(body)
+        left.pack(side="left", fill="y")
+        self.txt_res = tk.Text(left, width=42, height=17, wrap="none")
+        self.txt_res.pack(fill="y", expand=True)
         self.txt_res.configure(font=("TkFixedFont", 10))
+
+        hist = ttk.LabelFrame(left, text="Historie výpočtů", padding=4)
+        hist.pack(fill="both", pady=(PAD, 0))
+        hcols = ("f", "z", "swr", "g", "fb", "note")
+        self.tree_hist = ttk.Treeview(hist, columns=hcols, show="headings", height=6)
+        for k, t, w_ in (("f", "MHz", 62), ("z", "Z [Ω]", 118), ("swr", "PSV", 46),
+                         ("g", "dBi", 50), ("fb", "F/B", 46), ("note", "model", 120)):
+            self.tree_hist.heading(k, text=t)
+            self.tree_hist.column(k, width=w_, anchor="e" if k != "note" else "w")
+        self.tree_hist.pack(fill="both", expand=True)
+        hb = ttk.Frame(hist)
+        hb.pack(fill="x", pady=(3, 0))
+        ttk.Button(hb, text="Vyčistit", command=self.clear_history).pack(side="left")
+        ttk.Button(hb, text="Uložit CSV…", command=self.save_history).pack(side="left", padx=4)
+        self.history: List[dict] = []
 
         right = ttk.Frame(body)
         right.pack(side="left", fill="both", expand=True)
@@ -455,6 +514,7 @@ class App(ttk.Frame):
         self.var_marks = tk.BooleanVar(value=True)
         ttk.Checkbutton(top, text="značky −3 dB", variable=self.var_marks).pack(side="left", padx=(10, 0))
         ttk.Button(top, text="Překreslit", command=self.draw_pattern).pack(side="left", padx=8)
+        ttk.Button(top, text="3D diagram", command=self.show_3d).pack(side="left", padx=4)
         ttk.Button(top, text="Uložit obrázek…", command=self.save_pattern).pack(side="left")
         for v in (self.var_range, self.var_pol):
             v.trace_add("write", lambda *a: self.draw_pattern())
@@ -478,9 +538,10 @@ class App(ttk.Frame):
 
         pbox = ttk.LabelFrame(left, text="Co se smí měnit", padding=PAD)
         pbox.pack(fill="both", expand=True)
-        cols = [("kind", "veličina", 130, "s"), ("wires", "dráty", 70, "s"),
-                ("lo", "min", 90, "f"), ("hi", "max", 90, "f"),
-                ("now", "nyní", 90, "f")]
+        cols = [("kind", "veličina", 130, "s"), ("wires", "dráty", 64, "s"),
+                ("lo", "min", 84, "f"), ("hi", "max", 84, "f"),
+                ("step", "krok", 60, "f"), ("link", "vazba", 78, "s"),
+                ("now", "nyní", 84, "f")]
         self.tbl_par = EditableTable(pbox, cols, self._par_edited, height=9)
         self.tbl_par.pack(fill="both", expand=True)
         pb = ttk.Frame(pbox)
@@ -599,7 +660,8 @@ class App(ttk.Frame):
                 now = read_param(self.model, p)
             except (IndexError, ValueError):
                 now = float("nan")
-            rows.append([p.kind, "+".join(str(i + 1) for i in p.wires), p.lo, p.hi, now])
+            rows.append([p.kind, "+".join(str(i + 1) for i in p.wires), p.lo, p.hi,
+                         p.step, p.linked_to() or "—", now])
         self.tbl_par.set_rows(rows)
 
     # ==================================================================
@@ -693,8 +755,10 @@ class App(ttk.Frame):
 
     def _par_edited(self, idx, key, val):
         p = self.opt_params[idx]
-        if key in ("lo", "hi"):
+        if key in ("lo", "hi", "step"):
             setattr(p, key, float(val))
+        elif key == "link":
+            self._set_link(idx, str(val))
         elif key == "kind" and str(val) in PARAM_KINDS:
             p.kind = str(val)
         elif key == "wires":
@@ -842,12 +906,25 @@ class App(ttk.Frame):
         model = self.model.copy()
         self.set_status("Počítám…")
 
-        def job(cancel, progress):
-            return analyse(model)
+        try:
+            sec = float(self.var_fbsec.get())
+        except (ValueError, AttributeError):
+            sec = 0.0
 
-        def done(res: Result):
+        def job(cancel, progress):
+            r = analyse(model, fb_sector_deg=sec)
+            try:
+                r_q = q_estimate(model)
+            except Exception:
+                r_q = (float("nan"), False, float("nan"), float("nan"))
+            return r, r_q
+
+        def done(payload):
+            res, qf = payload
             self.result = res
+            self._last_q = qf
             self._show_result(res)
+            self.add_history(res)
             self.draw_geometry()
             self.draw_pattern()
             self.set_status("Hotovo.")
@@ -878,6 +955,11 @@ class App(ttk.Frame):
             f"Šířka svazku H/V   {r.beam_h_deg:.1f}° / {r.beam_v_deg:.1f}°",
             f"Účinnost (integr.) {100 * r.efficiency:.1f} %",
         ]
+        qi = getattr(self, "_last_q", None)
+        if qi and np.isfinite(qi[0]):
+            q, ok, qlo, qhi = qi
+            lines.insert(13, f"Činitel jakosti Q  {q:.1f}" if ok
+                         else f"Činitel jakosti Q  {qlo:.0f}–{qhi:.0f} (nestabilní)")
         if r.solution is not None:
             lines += ["", f"Segmentů           {r.solution.mesh.nseg}",
                       f"Neznámých          {r.solution.mesh.nbasis}"]
@@ -1358,7 +1440,12 @@ class App(ttk.Frame):
                     freqs.append(float(tok))
                 except ValueError:
                     pass
-        return Objective(freqs_mhz=freqs, w_gain=num("w_gain", 1.0),
+        try:
+            sec = float(self.var_fbsec.get())
+        except (ValueError, AttributeError):
+            sec = 0.0
+        return Objective(freqs_mhz=freqs, fb_sector_deg=sec,
+                         w_gain=num("w_gain", 1.0),
                          w_fb=num("w_fb", 0.5), w_swr=num("w_swr", 2.0),
                          target_swr=num("target_swr", 1.5),
                          w_r=num("w_r", 0.0), target_r=num("target_r", 50.0),
@@ -1371,7 +1458,8 @@ class App(ttk.Frame):
             return
         obj = self._objective()
         base = self.model.copy()
-        params = [Parameter(p.kind, list(p.wires), p.lo, p.hi, p.endpoint, p.axis, p.label)
+        params = [Parameter(p.kind, list(p.wires), p.lo, p.hi, p.endpoint, p.axis,
+                            p.label, p.step, p.link, p.link_factor, p.link_offset)
                   for p in self.opt_params]
         try:
             pop = int(self.var_pop.get())
@@ -1429,6 +1517,260 @@ class App(ttk.Frame):
         self.refresh_all()
         self.nb.select(0)
         self.set_status("Optimalizovaná geometrie převzata do modelu.")
+
+
+    # ==================================================================
+    #  průvodci a úpravy geometrie
+    # ==================================================================
+    def _zin(self) -> complex:
+        """Poslední spočtená impedance, jinak spočítá rychle teď."""
+        if self.result is not None:
+            return self.result.zin
+        try:
+            return solve(self.model).zin
+        except Exception:
+            return complex(50.0, 0.0)
+
+    def run_wizard(self):
+        m = dlg.wizard_dialog(self.master)
+        if m is None:
+            return
+        self.model = m
+        self.path = None
+        self.result = None
+        self.sweep_results = []
+        self.opt_params = []
+        self.refresh_all()
+        f = self.model.freq_mhz
+        self.var_f1.set(f"{f * 0.97:.4f}")
+        self.var_f2.set(f"{f * 1.03:.4f}")
+        self.set_status(f"Vytvořeno průvodcem: {m.name}")
+
+    def _selected_wires(self):
+        i = self.tbl_wires.selected_index()
+        if i is None:
+            return None
+        if messagebox.askyesno("Rozsah úpravy",
+                               f"Použít jen na vybraný drát č. {i + 1}?\n"
+                               f"„Ne“ použije úpravu na celou anténu.",
+                               default="no"):
+            return [i]
+        return None
+
+    def _edit_op(self, fn):
+        sel = self._selected_wires()
+        if fn(self.master, self.model, sel):
+            self._after_edit()
+
+    def _after_edit(self):
+        self.result = None
+        self.sweep_results = []
+        self.refresh_all()
+        self.set_status("Geometrie upravena — přepočítej (F5).")
+
+    def op_rescale(self):
+        if dlg.rescale_freq_dialog(self.master, self.model):
+            f = self.model.freq_mhz
+            self.var_f1.set(f"{f * 0.97:.4f}")
+            self.var_f2.set(f"{f * 1.03:.4f}")
+            self._after_edit()
+
+    def op_stack(self):
+        if dlg.stack_dialog(self.master, self.model):
+            self._after_edit()
+
+    def op_polar(self):
+        if dlg.polar_wire_dialog(self.master, self.model):
+            self._after_edit()
+
+    def op_taper(self):
+        i = self.tbl_wires.selected_index()
+        if i is None:
+            messagebox.showinfo("Vyber drát",
+                                "Nejdřív v tabulce vyber drát, ze kterého má "
+                                "vzniknout zúžený prvek.")
+            return
+        if dlg.taper_dialog(self.master, self.model, i):
+            self._after_edit()
+
+    def op_elements(self):
+        d = dlg.ElementDialog(self.master, self.model, self._after_edit)
+        self.master.wait_window(d)
+
+    # ==================================================================
+    #  rezonance a historie
+    # ==================================================================
+    def do_resonance(self):
+        model = self.model.copy()
+        self.set_status("Hledám rezonanci…")
+
+        def job(cancel, progress):
+            return find_resonance(model)
+
+        def done(res):
+            if res is None:
+                self.set_status("V rozsahu ±20 % rezonance není.")
+                messagebox.showinfo("Rezonance",
+                                    "V rozsahu ±20 % od aktuálního kmitočtu "
+                                    "anténa nerezonuje.")
+                return
+            f, z = res
+            self.set_status(f"Rezonance na {f:.4f} MHz, Z = {z.real:.1f} Ω")
+            if messagebox.askyesno("Rezonance",
+                                   f"Anténa rezonuje na {f:.4f} MHz "
+                                   f"(Z = {z.real:.1f} {z.imag:+.1f} j Ω).\n\n"
+                                   f"Nastavit tenhle kmitočet do modelu?"):
+                self.model.freq_mhz = f
+                self.var_freq.set(f"{f:.4f}")
+                self._set_freq()
+                self.do_calc()
+
+        self.worker.run(job, done, on_error=self._err)
+
+    def add_history(self, r: Result):
+        self.history.append({
+            "f": r.freq_mhz, "r": r.zin.real, "x": r.zin.imag, "swr": r.swr,
+            "g": r.gain_dbi, "fb": r.fb_db, "note": self.model.name})
+        self.tree_hist.insert("", 0, values=(
+            f"{r.freq_mhz:.4f}", f"{r.zin.real:.1f}{r.zin.imag:+.1f}j",
+            f"{r.swr:.2f}", f"{r.gain_dbi:.2f}", f"{r.fb_db:.1f}",
+            self.model.name[:24]))
+
+    def clear_history(self):
+        self.history = []
+        for i in self.tree_hist.get_children():
+            self.tree_hist.delete(i)
+
+    def save_history(self):
+        if not self.history:
+            messagebox.showinfo("Prázdné", "Historie je prázdná.")
+            return
+        p = filedialog.asksaveasfilename(defaultextension=".csv",
+                                         filetypes=[("CSV", "*.csv")])
+        if not p:
+            return
+        import csv
+        with open(p, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f, delimiter=";")
+            w.writerow(["f_MHz", "R_ohm", "X_ohm", "PSV", "zisk_dBi", "FB_dB", "model"])
+            for h in self.history:
+                w.writerow([f"{h['f']:.4f}", f"{h['r']:.2f}", f"{h['x']:.2f}",
+                            f"{h['swr']:.3f}", f"{h['g']:.2f}", f"{h['fb']:.2f}",
+                            h["note"]])
+        self.set_status(f"Historie uložena: {p}")
+
+    # ==================================================================
+    #  3D diagram
+    # ==================================================================
+    def show_3d(self):
+        if self.result is None or self.result.solution is None:
+            messagebox.showinfo("Nejdřív spočítej", "Spusť výpočet (F5).")
+            return
+        sol = self.result.solution
+        grounded = self.model.ground.kind != "free"
+        win = tk.Toplevel(self.master)
+        win.title("3D vyzařovací diagram")
+        top = ttk.Frame(win, padding=PAD)
+        top.pack(fill="x")
+        v_rng = tk.StringVar(value="30")
+        ttk.Label(top, text="Rozsah [dB]:").pack(side="left")
+        ttk.Combobox(top, textvariable=v_rng, width=5, state="readonly",
+                     values=["20", "30", "40", "50"]).pack(side="left", padx=4)
+        v_ant = tk.BooleanVar(value=True)
+        ttk.Checkbutton(top, text="zobrazit anténu", variable=v_ant).pack(side="left", padx=8)
+        fig = Figure(figsize=(7.2, 6.0), dpi=100)
+        ax = fig.add_subplot(111, projection="3d")
+        cv = FigureCanvasTkAgg(fig, master=win)
+        cv.get_tk_widget().pack(fill="both", expand=True)
+        NavigationToolbar2Tk(cv, win).update()
+
+        def draw():
+            ax.clear()
+            try:
+                rng = float(v_rng.get())
+            except ValueError:
+                rng = 30.0
+            n_th = 46 if grounded else 73
+            th = np.radians(np.linspace(0.5, 89.5 if grounded else 179.5, n_th))
+            ph = np.radians(np.linspace(0, 360, 97))
+            TH, PH = np.meshgrid(th, ph, indexing="ij")
+            pat = far_field(sol, TH, PH)
+            g = pat.gain_dbi
+            gmax = float(np.max(g))
+            r = np.clip(g - gmax + rng, 0, None) / rng
+            X = r * np.sin(TH) * np.cos(PH)
+            Y = r * np.sin(TH) * np.sin(PH)
+            Z = r * np.cos(TH)
+            norm = matplotlib.colors.Normalize(vmin=0, vmax=1)
+            ax.plot_surface(X, Y, Z, facecolors=matplotlib.colormaps["turbo"](norm(r)),
+                            rstride=1, cstride=1, linewidth=0, antialiased=True,
+                            shade=False, alpha=0.95)
+            if v_ant.get():
+                lo, hi = self.model.bounds()
+                span = max(np.max(hi - lo), 1e-6)
+                c = 0.5 * (lo + hi)
+                for w in self.model.wires:
+                    a = (w.a - c) / span * 0.9
+                    b = (w.b - c) / span * 0.9
+                    ax.plot([a[0], b[0]], [a[1], b[1]], [a[2], b[2]],
+                            color="#111", lw=1.6, zorder=10)
+            if grounded:
+                gx = np.linspace(-1, 1, 2)
+                GX, GY = np.meshgrid(gx, gx)
+                ax.plot_surface(GX, GY, np.zeros_like(GX), alpha=0.10, color="#795548")
+            ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
+            ax.set_box_aspect((1, 1, 0.55 if grounded else 1))
+            lim = 1.05
+            ax.set_xlim(-lim, lim); ax.set_ylim(-lim, lim)
+            ax.set_zlim(0 if grounded else -lim, lim)
+            ax.set_title(f"max {gmax:.2f} dBi   (povrch = {rng:.0f} dB rozsah)",
+                         fontsize=10)
+            fig.tight_layout()
+            cv.draw_idle()
+
+        ttk.Button(top, text="Překreslit", command=draw).pack(side="left", padx=6)
+        ttk.Button(top, text="Uložit…",
+                   command=lambda: self._save_fig(fig)).pack(side="left")
+        draw()
+
+    def _save_fig(self, fig):
+        p = filedialog.asksaveasfilename(defaultextension=".png",
+                                         filetypes=[("PNG", "*.png"), ("PDF", "*.pdf")])
+        if p:
+            fig.savefig(p, dpi=160, bbox_inches="tight")
+            self.set_status(f"Uloženo: {p}")
+
+    # ==================================================================
+    def _set_link(self, idx: int, text: str):
+        """Vazba parametru: prázdné/„—“ = volný, jinak např. #1, 0.95*#1, #1-0.2"""
+        p = self.opt_params[idx]
+        t = str(text).strip().replace(",", ".").replace("×", "*").replace(" ", "")
+        if t in ("", "-", "—", "0"):
+            p.link, p.link_factor, p.link_offset = None, 1.0, 0.0
+            self.refresh_params()
+            return
+        import re
+        m = re.match(r"^(?:([-+]?\d*\.?\d+)\*)?#(\d+)([-+]\d*\.?\d+)?$", t)
+        if not m:
+            messagebox.showerror(
+                "Nesrozumitelná vazba",
+                "Zapiš vazbu jako #2 (stejné jako parametr 2), 0.95*#2 "
+                "(poměrem) nebo #2-0.15 (s posunem). Prázdné pole = volný "
+                "parametr.")
+            return
+        fac = float(m.group(1)) if m.group(1) else 1.0
+        ref = int(m.group(2)) - 1
+        off = float(m.group(3)) if m.group(3) else 0.0
+        if ref == idx or not (0 <= ref < len(self.opt_params)):
+            messagebox.showerror("Neplatná vazba", "Parametr nemůže odkazovat sám na sebe.")
+            return
+        if self.opt_params[ref].link is not None:
+            messagebox.showerror("Neplatná vazba",
+                                 "Odkazovat lze jen na volný parametr, ne na "
+                                 "další svázaný.")
+            return
+        p.link, p.link_factor, p.link_offset = ref, fac, off
+        self.refresh_params()
 
     # ==================================================================
     #  soubory

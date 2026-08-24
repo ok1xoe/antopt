@@ -57,6 +57,17 @@ sudo dnf install python3-tkinter   # Fedora
 
 ## Co program umí
 
+**Tvorba modelu**
+
+* průvodci: dipól, inverted V, vertikál, Yagi (2–8 prvků), quad, delta loop,
+  fázované pole, long wire
+* úpravy geometrie: posun, rotace, zrcadlení, změna měřítka
+* **přeladění celé antény na jiný kmitočet** jedním příkazem
+* **stoh / řada** až 64 kopií s volitelným fázováním
+* **zúžené (teleskopické) prvky** — prvek z několika trubek různého průměru
+* zadání drátu polárně (délka, azimut, zenit)
+* editor prvků — pracuje s celými prvky včetně zúžení
+
 **Model**
 
 * libovolně orientované tenké dráty ve 3D, spoje více drátů v jednom uzlu
@@ -76,19 +87,31 @@ sudo dnf install python3-tkinter   # Fedora
 * zisk v dBi/dBd, F/B, poměr před/stranou
 * elevace a azimut maxima, šířky svazků v −3 dB, účinnost z integrálu diagramu
 * kmitočtové rozmítání se šířkou pásma pod PSV 2
+* **hledání rezonance**, činitel jakosti Q
+* F/B klasicky nebo **v zadním výseku** (60/90/120/180°) jako v MMANA
+* **historie výpočtů** s exportem do CSV
+* **3D vyzařovací diagram** s vykreslenou anténou
 * rozložení proudu barevně na 3D náhledu geometrie
 
 **Optimalizace**
 
-* volitelné parametry: délka prvku, rozteč, výška, poloměr, jednotlivá souřadnice
-* cílová funkce váží zisk, F/B, PSV a impedanci — i na několika kmitočtech naráz
+* 19 druhů proměnných: délky a polohy drátů i celých prvků, poloměry, výška,
+  azimut a zenit, hodnoty zátěží (R, X, L, C), napětí a fáze zdrojů, kmitočet
+* **svázané proměnné** — `#2`, `0.95*#2`, `#2-0.15`; drží symetrii a poměry
+* volitelný **krok** proměnné (kvantizace na reálné rozměry)
+* cíle: zisk, F/B, F/S, PSV, R, X, **úhel vyzařování**, **proud v uzlu** —
+  i na několika kmitočtech naráz
 * genetický algoritmus + doladění Nelder-Meadem, běží na pozadí, lze zastavit
 
-**Přizpůsobení**
+**Přizpůsobení a VF výpočty**
 
-* návrh vlásenky (hairpin / beta match) — potřebná reaktance, Z₀ dvoulinky,
-  délka pahýlu, průběh PSV po přizpůsobení
-* automatické doladění délky zářiče na podmínku `R² + X² = Z₀·R`
+* návrh vlásenky (hairpin / beta match) + doladění délky zářiče na podmínku
+  `R² + X² = Z₀·R`
+* **LC článek** — obě topologie, obě znaménka, ověřená řešení
+* **pahýl** (zkratovaný i otevřený) a **vložená transformační sekce**
+* **napáječ** — transformace impedance, ztráty zvýšené odrazem, 14 typů
+  kabelů s činitelem zkrácení
+* reaktance L a C, rezonance LC, návrh vzduchové cívky
 
 **Soubory**
 
@@ -149,6 +172,47 @@ python3 -m pytest tests/ -q
 
 ---
 
+## Shoda s MMANA-GAL
+
+Co z MMANA je hotové a co ne — bez přikrášlování:
+
+| Funkce MMANA | AntOpt |
+|---|---|
+| Tabulka drátů, zdrojů, zátěží | ✅ |
+| Zdroje s fází, zátěže R+jX i RLC | ✅ |
+| Zem: volný prostor / dokonalá / reálná | ✅ |
+| Vyzařovací diagramy, polarizace H/V/celkem | ✅ |
+| Měřicí vektor v diagramu | ✅ |
+| 3D diagram s anténou | ✅ |
+| Plots: Z, PSV, zisk/F-B přes kmitočet | ✅ |
+| Resonance — hledání rezonančního kmitočtu | ✅ |
+| F/B v zadním výseku | ✅ |
+| Wire Scale — přeladění na jiný kmitočet | ✅ |
+| Make Stack | ✅ |
+| Taper Wire Set — zúžené prvky | ✅ |
+| Move / rotace / zrcadlení / měřítko | ✅ |
+| Wire definition — polární zadání | ✅ |
+| Element editor | ✅ |
+| Průvodci tvorbou antén | ✅ |
+| Optimalizace: cíle jX, PSV, zisk, F/B, elevace, proud | ✅ |
+| Optimalizace: svázané proměnné (association) | ✅ |
+| Optimalizace: krok proměnné (pitch) | ✅ |
+| Optimalizace: All elements | ✅ |
+| Tools: rezonance, cívka, LC match, stub match, line match | ✅ |
+| Hairpin match | ✅ |
+| Historie výpočtů | ✅ |
+| Import/export MMANA .maa a NEC | ✅ |
+| **Grafický editor drátů myší** (XY/XZ/YZ pohledy) | ❌ zatím ne |
+| **Režim λ** (rozměry ve vlnových délkách) | ❌ |
+| **Zúžená segmentace** (DM1/DM2/SC/EC) | ❌ jen rovnoměrná |
+| **Search & Replace souřadnic** | ❌ |
+| **Log optimalizace se 128 kroky a ručním výběrem** | ❌ |
+| **Překryv diagramů více antén** (.mab porovnání) | ❌ historie je jen tabulka |
+| **Tisk** | ❌ jen uložení obrázku |
+| Sommerfeldova zem (MMANA ji taky nemá) | ❌ |
+
+---
+
 ## Kde být opatrný
 
 Tohle jsou skutečná omezení modelu, ne formality:
@@ -163,6 +227,12 @@ Tohle jsou skutečná omezení modelu, ne formality:
 * **Velmi tlusté dráty** (poloměr nad ~λ/200) — reaktance se začne rozcházet,
   odpor zůstává dobrý. Pro trubky 25 mm na 20 m je odchylka pod 1 Ω.
 * **Segment musí být delší než 4× poloměr drátu.** Program to hlídá a upozorní.
+* **Zúžený prvek je aproximace.** Skok průměru mezi sekcemi tenkodrátový model
+  neumí přesně — u velkých skoků čekej odchylku reaktance. Zisk a diagram jsou
+  spolehlivější než impedance.
+* **Činitel jakosti Q** je lokální derivace impedance. U antén záměrně
+  zploštělých přes celé pásmo je nestabilní — program to pozná a místo jedné
+  hodnoty ukáže rozsah. Skutečná šířka pásma se pozná jen z rozmítání.
 * Není tu vodivá plocha, válec, dielektrikum ani NEC-4 „ground screen“.
 
 ---
@@ -176,10 +246,14 @@ antopt/
   solver.py     jádro MoM — impedanční matice, buzení, proudy
   farfield.py   dálné pole, zisk, F/B, Fresnelovy koeficienty
   analysis.py   rozmítání kmitočtu, šířka pásma
-  optimize.py   parametry, cílová funkce, GA + Nelder-Mead
+  optimize.py   parametry, cílová funkce, GA + Nelder-Mead, svázané proměnné
+  geometry_ops.py  posun/rotace/zrcadlení/měřítko, přeladění, stoh, zúžené prvky
+  wizards.py    průvodci tvorbou antén
   match.py      návrh vlásenky (hairpin), ladění zářiče
+  hfcalc.py     rezonance, cívky, LC článek, pahýly, vedení, napáječe
   fileio.py     import/export NEC a MMANA
   examples.py   vestavěné příklady
+  dialogs.py    dialogy GUI
   gui.py        Tkinter aplikace
 run_antopt.py   spouštěč
 tests/          ověřovací sada
