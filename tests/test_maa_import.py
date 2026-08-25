@@ -239,3 +239,76 @@ def test_neznamy_typ_zeme_tise_nevypne_zem():
     assert Ground.from_name("dobrá").kind == "real"        # zkrácený název projde
     with pytest.raises(ValueError):
         Ground.from_name("nesmysl")
+
+
+# --------------------------------------------------------------------------
+# teleskopické prvky zadané rozpisem trubek (MMANA je nepíše jako dráty)
+# --------------------------------------------------------------------------
+OK1M = [(-2.7500, 11.0000, "-0.001", 24), (0.0000, 10.3200, "-0.001", 22),
+        (-2.2000, 7.1500, "-0.002", 16), (-0.2600, 6.9700, "-0.002", 16),
+        (1.1980, 6.6600, "-0.002", 14), (-1.5300, 5.1040, "0.008", 12),
+        (0.2200, 5.0600, "0.008", 12), (0.6930, 4.8820, "0.008", 10),
+        (2.4400, 4.6960, "0.008", 10)]
+TAPER = ["-0.001, 0, 2.4, 0.015, 1.2, 0.0125, 1.2, 0.01, 99999.9, 0.008",
+         "-0.002, 0, 2.4, 0.01, 99999.9, 0.008",
+         "-0.003, 0, 99999.9, 0.015"]
+
+
+def _maa_ok1m(taper=True):
+    L = ["*** MMANA-GAL antenna file ***", "OK1M-14-21-28_9el_v0.3", "14.200", "9"]
+    for x, ln, r, n in OK1M:
+        L.append(f"{x:.4f}, {-ln / 2:.4f}, 12.0, {x:.4f}, {ln / 2:.4f}, 12.0, {r}, {n}")
+    L += ["***Source***", "1", "w2c, 0.0, 1.0", "***Load***", "0"]
+    if taper:
+        L += ["***Segmentation***"] + TAPER
+    L += ["***G/H/M/R/AzEl/X***", "2, 5.0, 0, 50, 0, 0, 0", "***End***"]
+    return "\n".join(L)
+
+
+def test_rozpis_trubek_sestavi_teleskopicke_prvky():
+    m, warn = fileio.from_maa(_maa_ok1m())
+    els = go.find_elements(m)
+    assert len(els) == 9, "prvků musí zůstat devět"
+    by_x = {round(e.position_x, 4): e for e in els}
+    refl = by_x[-2.7500]                       # 20 m: 30/25/20/16
+    secs = go.element_sections(m, refl.wires)
+    assert [round(s.radius * 2000) for s in secs] == [30, 25, 20, 16]
+    # první trubka je 2,4 m PŘES STŘED, tedy 1,2 m na stranu
+    assert secs[0].length == pytest.approx(1.2, abs=1e-6)
+    assert secs[1].length == pytest.approx(1.2, abs=1e-6)
+    assert 2 * sum(s.length for s in secs) == pytest.approx(11.0, abs=1e-6)
+    d15 = go.element_sections(m, by_x[-2.2000].wires)          # 15 m: 20/16
+    assert [round(s.radius * 2000) for s in d15] == [20, 16]
+    d10 = go.element_sections(m, by_x[-1.5300].wires)          # 10 m: celý 16
+    assert [round(s.radius * 2000) for s in d10] == [16]
+    assert any("teleskopický prvek" in w for w in warn)
+
+
+def test_zdroj_zustane_na_zarici_i_po_rozbaleni():
+    m, _ = fileio.from_maa(_maa_ok1m())
+    driven = [e for e in go.find_elements(m) if abs(e.position_x) < 1e-9][0]
+    assert m.sources[0].wire in driven.wires
+
+
+def test_rozpis_trubek_trefi_hodnoty_autora():
+    """Bez rozpisu vyšla anténa o 1 dB hůř a s jinou impedancí.
+
+    Autor v MMANA: Z = 49,2 + 2,6j, PSV 1,1, zisk 11,4 dBi, elevace 23,7°.
+    """
+    from antopt import analysis
+    m, _ = fileio.from_maa(_maa_ok1m())
+    r = analysis.analyse(m)
+    assert r.zin.real == pytest.approx(49.2, abs=3.0)
+    assert r.zin.imag == pytest.approx(2.6, abs=3.0)
+    assert r.gain_dbi == pytest.approx(11.4, abs=0.4)
+    assert r.swr == pytest.approx(1.1, abs=0.15)
+    assert r.elevation_deg == pytest.approx(23.7, abs=1.0)
+
+
+def test_bez_rozpisu_vyjde_antena_znatelne_jinak():
+    """Kontrola, že to není náhoda — bez tabulky trubek se výsledek liší."""
+    from antopt import analysis
+    a = analysis.analyse(fileio.from_maa(_maa_ok1m(taper=True))[0])
+    b = analysis.analyse(fileio.from_maa(_maa_ok1m(taper=False))[0])
+    assert abs(a.zin - b.zin) > 8.0
+    assert a.gain_dbi - b.gain_dbi > 0.5

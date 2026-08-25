@@ -155,6 +155,76 @@ def _nums(line: str) -> List[float]:
     return [float(x) for x in re.findall(_NUM, line)]
 
 
+MAA_TAPER_END = 99999.9        # „tahle trubka jde až na konec prvku“
+
+
+def _maa_taper_table(lines: List[str]) -> dict:
+    """Rozpisy teleskopických prvků: {klíč: [(délka, poloměr), …]}.
+
+    Řádek má tvar ``klíč, 0, délka, poloměr, délka, poloměr, …, 99999.9, poloměr``.
+    Klíč je záporné číslo, kterým se prvek odkazuje ze sloupce poloměru.
+    """
+    out: dict = {}
+    for s in lines:
+        s = s.strip()
+        if not s or s.startswith("*") or s.startswith("#"):
+            continue
+        v = _nums(s)
+        if len(v) < 4 or v[0] >= 0 or v[0] <= -0.5:
+            continue
+        if not any(abs(x - MAA_TAPER_END) < 1.0 for x in v):
+            continue
+        pairs = []
+        rest = v[2:] if abs(v[1]) < 1e-12 else v[1:]
+        for k in range(0, len(rest) - 1, 2):
+            ln, rad = rest[k], rest[k + 1]
+            if rad <= 0 or ln <= 0:
+                break
+            pairs.append((ln, rad))
+            if abs(ln - MAA_TAPER_END) < 1.0:
+                break
+        if len(pairs) >= 2:
+            out[round(v[0], 6)] = pairs
+    return out
+
+
+def _taper_key(radius: float, defs: dict) -> Optional[float]:
+    if radius >= 0 or not defs:
+        return None
+    k = round(radius, 6)
+    if k in defs:
+        return k
+    for cand in defs:
+        if abs(cand - radius) < 1e-7:
+            return cand
+    return None
+
+
+def _taper_sections(pairs: List[Tuple[float, float]], half: float):
+    """Rozpis trubek -> sekce od středu ven pro ``geometry_ops.taper_element``.
+
+    První trubka je středová, její délka platí přes celý střed (na jednu
+    stranu tedy polovina). Další už jsou na každou stranu. Poslední
+    (99999.9) dopne prvek až na konec.
+    """
+    from .geometry_ops import TaperSection
+    secs, used = [], 0.0
+    for k, (ln, rad) in enumerate(pairs):
+        if abs(ln - MAA_TAPER_END) < 1.0 or used >= half - 1e-6:
+            secs.append(TaperSection(max(half - used, 1e-3), rad))
+            used = half
+            break
+        step = (ln / 2.0) if k == 0 else ln
+        step = min(step, half - used)
+        if step <= 1e-6:
+            continue
+        secs.append(TaperSection(step, rad))
+        used += step
+    if used < half - 1e-6:
+        secs.append(TaperSection(half - used, pairs[-1][1]))
+    return secs
+
+
 def from_maa(text: str) -> Tuple[Model, List[str]]:
     warn: List[str] = []
     lines = [l.rstrip() for l in text.splitlines()]
@@ -243,6 +313,21 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
 
     model = Model(name=name or "import MMANA", freq_mhz=freq)
 
+    # --- předehra: tabulka teleskopických prvků
+    #
+    # Zúžený prvek MMANA nepíše jako několik drátů. Do sloupce poloměru dá
+    # ZÁPORNÝ KLÍČ (-0.001, -0.002, …) a rozpis trubek uloží zvlášť:
+    #
+    #     -0.001, 0, 2.4, 0.015, 1.2, 0.0125, 1.2, 0.01, 99999.9, 0.008
+    #      klíč   ?  délka,poloměr  …  99999.9 = „až na konec“
+    #
+    # První trubka je středová a její délka platí přes celý střed, další
+    # už jsou na každou stranu. Bez téhle tabulky se z prvku z trubek
+    # 30/25/20/16 stal drát o poloměru 1 mm — anténa pak vyšla o 1 dB hůř
+    # a s úplně jinou impedancí.
+    taper_defs = _maa_taper_table(lines)
+    taper_hits: List[Tuple[int, float]] = []
+
     # Dráty se čtou, dokud řádky vypadají jako dráty — ne jen deklarovaný počet.
     # Kdyby se počet přečetl špatně, zbytek geometrie by se tiše zahodil.
     read = 0
@@ -271,7 +356,11 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
             nseg = 0            # doplní se automaticky
             if int(ns) < 0:
                 n_taper += 1
-        if r < 0:
+        key = _taper_key(r, taper_defs)
+        if key is not None:
+            taper_hits.append((read, key))
+            r = taper_defs[key][-1][1]        # prozatím poloměr koncové trubky
+        elif r < 0:
             # Záporný poloměr je v .maa značka „hodnota je v jiné jednotce“.
             # Která to je, se pozná z velikosti: poloměr vodiče přes 0,5 m
             # neexistuje, takže velké číslo jsou milimetry a malé metry.
@@ -350,6 +439,28 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
     if not model.sources:
         warn.append("Soubor neobsahoval zdroj — vložen do středu prvního drátu.")
         model.sources.append(Source(0, 0.5, 1.0))
+
+    # --- rozbalit teleskopické prvky (až teď, ať se zdroje přečíslují správně)
+    if taper_hits:
+        from .geometry_ops import taper_element
+        popis = []
+        for wi, key in sorted(taper_hits, reverse=True):
+            if wi >= len(model.wires):
+                continue
+            half = model.wires[wi].length / 2.0
+            secs = _taper_sections(taper_defs[key], half)
+            try:
+                taper_element(model, wi, secs)
+            except ValueError as e:
+                warn.append(f"Drát {wi + 1}: zúžený prvek se nepodařilo "
+                            f"sestavit ({e}).")
+                continue
+            popis.append("Ø " + "/".join(
+                f"{s.radius * 2000:g}" for s in secs) + " mm")
+        if popis:
+            uniq = sorted(set(popis))
+            warn.append(f"{len(popis)}× teleskopický prvek sestaven z rozpisu "
+                        f"trubek v souboru: " + "; ".join(uniq) + ".")
 
     if n_negr_mm:
         warn.append(f"{n_negr_mm}× poloměr zapsaný záporně, hodnota v milimetrech "
