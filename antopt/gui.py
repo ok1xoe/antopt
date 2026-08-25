@@ -5,6 +5,7 @@ import math
 import os
 import queue
 import threading
+import time
 import traceback
 from typing import Callable, List, Optional
 
@@ -161,13 +162,19 @@ class Worker:
         self.q: "queue.Queue" = queue.Queue()
         self.cancel = threading.Event()
         self.busy = False
+        self.what = ""
         self._poll()
 
-    def run(self, fn, on_done, on_error=None, on_progress=None):
+    def run(self, fn, on_done, on_error=None, on_progress=None, what=""):
         if self.busy:
-            messagebox.showinfo("Počítá se", "Počkej, až doběhne předchozí výpočet.")
+            messagebox.showinfo(
+                "Počítá se",
+                f"Ještě běží: {self.what or 'předchozí výpočet'}.\n\n"
+                f"Počkej, až doběhne — průběh je vidět v okně s výpisem. "
+                f"Dlouhý výpočet jde přerušit tlačítkem „Zastavit“.")
             return False
         self.busy = True
+        self.what = what or "výpočet"
         self.cancel.clear()
 
         def target():
@@ -948,7 +955,7 @@ class App(ttk.Frame):
             self.draw_pattern()
             self.set_status("Hotovo.")
 
-        self.worker.run(job, done, on_error=self._err)
+        self.worker.run(job, done, on_error=self._err, what="výpočet modelu")
 
     def _err(self, tb):
         self.set_status("Chyba.")
@@ -1024,7 +1031,7 @@ class App(ttk.Frame):
             else:
                 self.set_status("Rozmítání hotovo. PSV nikde neklesne pod 2.")
 
-        self.worker.run(job, done, on_error=self._err,
+        self.worker.run(job, done, on_error=self._err, what="rozmítání kmitočtu",
                         on_progress=lambda t: self.set_status(t))
 
     def draw_sweep(self):
@@ -1497,6 +1504,18 @@ class App(ttk.Frame):
         self.txt_opt.insert("end", "VÝCHOZÍ STAV\n" + start.summary() + "\n\n")
         self.pb_opt.configure(maximum=gen, value=0)
 
+        log = dlg.LogWindow(self.master, "Optimalizace",
+                            on_stop=self.worker.stop)
+        self._opt_log = log
+        n_free = len(free_params(params))
+        log.log(f"Proměnných {len(params)} (z toho volných {n_free}), "
+                f"populace {pop}, generací {gen}"
+                + (", s doladěním" if polish else ", bez doladění"), stamp=False)
+        log.log("Kmitočty: " + ", ".join(f"{f:.3f}" for f in obj.freq_list(base))
+                + " MHz    jádro: " + (obj.engine or "vlastní"), stamp=False)
+        log.log("-" * 66, stamp=False)
+        log.log("výchozí stav:  " + start.brief())
+
         def job(cancel, progress):
             def cb(g, total, best, txt):
                 progress(g, total, best, txt)
@@ -1504,11 +1523,34 @@ class App(ttk.Frame):
             return optimize(base, params, obj, pop_size=pop, generations=gen,
                             polish=polish, progress=cb)
 
+        last = [0.0]
+
         def prog(g, total, best, txt):
-            self.pb_opt.configure(value=min(g, total))
+            self.pb_opt.configure(maximum=max(1, total), value=min(g, total))
             self.set_status("Optimalizace: " + txt)
+            if not log.alive():
+                return
+            head = "Doladění" if txt.startswith("doladění") else "Hledání"
+            log.step(g, total, head)
+            # generace hlas každou, průběžné kroky nejvýš jednou za dvě
+            # vteřiny — jinak by log ubíhal rychleji, než se dá číst
+            now = time.time()
+            if txt.startswith(("generace", "doladění hotovo")):
+                log.log(txt)
+                last[0] = now
+            elif now - last[0] > 2.0:
+                log.log(txt)
+                last[0] = now
 
         def done(res):
+            if log.alive():
+                log.log("-" * 66, stamp=False)
+                log.log("hotovo:        " + res.evaluation.brief())
+                log.log(f"cena {start.cost:.3f} → {res.cost:.3f}   "
+                        f"({res.iterations} vyhodnocení)", stamp=False)
+                for p, v in zip(params, res.values):
+                    log.log(f"  {p.describe():34s} {v:9.4f}", stamp=False)
+                log.finish("Optimalizace hotova")
             self._opt_candidate = res.model
             txt = ["VÝSLEDEK"]
             for p, v in zip(params, res.values):
@@ -1529,7 +1571,15 @@ class App(ttk.Frame):
             self.pb_opt.configure(value=self.pb_opt["maximum"])
             self.set_status("Optimalizace hotova. Můžeš výsledek přijmout do modelu.")
 
-        self.worker.run(job, done, on_error=self._err, on_progress=prog)
+        def failed(msg):
+            if log.alive():
+                log.log("CHYBA:\n" + msg)
+                log.finish("Optimalizace selhala")
+            self._err(msg)
+
+        if not self.worker.run(job, done, on_error=failed, on_progress=prog,
+                               what="optimalizace"):
+            log.destroy()
 
     def accept_opt(self):
         if self._opt_candidate is None:
@@ -1693,7 +1743,7 @@ class App(ttk.Frame):
                 self._set_freq()
                 self.do_calc()
 
-        self.worker.run(job, done, on_error=self._err)
+        self.worker.run(job, done, on_error=self._err, what="hledání rezonance")
 
     def add_history(self, r: Result):
         self.history.append({

@@ -289,6 +289,15 @@ class Evaluation:
     cost: float
     detail: List[dict]
 
+    def brief(self) -> str:
+        """Jednořádkové shrnutí pro průběžný výpis."""
+        if not self.detail:
+            return ""
+        g = min(d["gain"] for d in self.detail)
+        fb = min(d["fb"] for d in self.detail)
+        sw = max(d["swr"] for d in self.detail)
+        return f"zisk≥{g:.2f} dBi  F/B≥{fb:.1f} dB  PSV≤{sw:.2f}"
+
     def summary(self) -> str:
         parts = []
         for d in self.detail:
@@ -420,15 +429,18 @@ def optimize(base: Model, params: Sequence[Parameter], obj: Objective,
 
     cache: dict = {}
 
-    def cost_of(x: np.ndarray) -> float:
+    def eval_of(x: np.ndarray) -> Evaluation:
         x = quantise(x)
         key = tuple(np.round(x, 8))
-        if key in cache:
-            return cache[key]
-        m = build_candidate(base, params, expand_values(params, x))
-        c = evaluate(m, obj).cost
-        cache[key] = c
-        return c
+        ev = cache.get(key)
+        if ev is None:
+            m = build_candidate(base, params, expand_values(params, x))
+            ev = evaluate(m, obj)
+            cache[key] = ev
+        return ev
+
+    def cost_of(x: np.ndarray) -> float:
+        return eval_of(x).cost
 
     # počáteční populace: výchozí bod + latinský hyperkrychlový vzorek
     pop = np.empty((pop_size, n))
@@ -437,11 +449,20 @@ def optimize(base: Model, params: Sequence[Parameter], obj: Objective,
         vals = (np.arange(pop_size - 1) + rng.random(pop_size - 1)) / (pop_size - 1)
         rng.shuffle(vals)
         pop[1:, j] = lo[j] + vals * (hi[j] - lo[j])
-    fit = np.array([cost_of(p) for p in pop])
+    # počáteční populace se počítá stejně dlouho jako jedna generace —
+    # bez hlášení to vypadalo, že se program zasekl hned na startu
+    polish_budget = (60 * n) if polish else 0
+    total = generations + polish_budget
+    fit = np.empty(pop_size)
+    for k in range(pop_size):
+        fit[k] = cost_of(pop[k])
+        if progress is not None and (k + 1) % 4 == 0:
+            if progress(0, total, float(np.nanmin(fit[:k + 1])),
+                        f"výchozí populace {k + 1}/{pop_size}") is False:
+                break
 
     history = [float(fit.min())]
     span = hi - lo
-    total = generations
 
     for gen in range(generations):
         order = np.argsort(fit)
@@ -470,7 +491,8 @@ def optimize(base: Model, params: Sequence[Parameter], obj: Objective,
         best = float(fit.min())
         history.append(best)
         if progress is not None:
-            txt = f"generace {gen + 1}/{generations}, nejlepší cena {best:.3f}"
+            txt = (f"generace {gen + 1}/{generations}   cena {best:.3f}   "
+                   + eval_of(pop[int(np.argmin(fit))]).brief())
             if progress(gen + 1, total, best, txt) is False:
                 break
 
@@ -479,15 +501,40 @@ def optimize(base: Model, params: Sequence[Parameter], obj: Objective,
     iters = len(cache)
 
     if polish:
+        # Doladění Nelder-Meadem je nejdelší fáze a dřív o sobě nedávalo vědět —
+        # ukazatel zůstal stát na poslední generaci a program vypadal zaseklý.
         from scipy.optimize import minimize
-        step = 0.03 * span
-        res = minimize(lambda x: cost_of(np.clip(x, lo, hi)), xbest,
-                       method="Nelder-Mead",
-                       options={"xatol": 1e-5, "fatol": 1e-4,
-                                "maxiter": 60 * n, "initial_simplex": None})
-        if res.fun < fit[ib]:
-            xbest = quantise(res.x)
-        history.append(float(min(res.fun, fit[ib])))
+
+        st = {"n": 0, "best": float(fit[ib])}
+
+        class _Abort(Exception):
+            pass
+
+        def polish_cost(x):
+            c = cost_of(np.clip(x, lo, hi))
+            st["n"] += 1
+            if c < st["best"]:
+                st["best"] = c
+            if progress is not None and st["n"] % 3 == 0:
+                done_units = generations + min(st["n"], polish_budget)
+                txt = (f"doladění {st['n']}/{polish_budget}   cena {st['best']:.3f}")
+                if progress(done_units, total, st["best"], txt) is False:
+                    raise _Abort()
+            return c
+
+        try:
+            res = minimize(polish_cost, xbest, method="Nelder-Mead",
+                           options={"xatol": 1e-5, "fatol": 1e-4,
+                                    # rozpočet se počítá ve vyhodnoceních,
+                                    # ne v iteracích — jinak ukazatel průběhu
+                                    # přeteče přes sto procent
+                                    "maxfev": polish_budget,
+                                    "initial_simplex": None})
+            if res.fun < fit[ib]:
+                xbest = quantise(res.x)
+            history.append(float(min(res.fun, fit[ib])))
+        except _Abort:
+            history.append(st["best"])
         iters = len(cache)
         if progress is not None:
             progress(total, total, float(history[-1]), "doladění hotovo")

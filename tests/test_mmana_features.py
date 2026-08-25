@@ -305,3 +305,52 @@ def test_new_parameter_kinds_roundtrip():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# --------------------------------------------------------------------------
+# průběh optimalizace se hlásí i během doladění
+# --------------------------------------------------------------------------
+def test_optimalizace_hlasi_prubeh_i_pri_doladeni():
+    """Doladění Nelder-Meadem je nejdelší fáze. Dřív o sobě nedávalo vědět
+    a program vypadal zaseklý — ukazatel stál na poslední generaci."""
+    from antopt import examples
+    from antopt.optimize import Objective, optimize, suggest_parameters
+
+    m = examples.yagi3_20m()
+    m.auto_segment(per_wavelength=20.0, min_seg=6)
+    ps = suggest_parameters(m)[:2]
+    seen = []
+
+    def cb(g, total, best, txt):
+        seen.append((g, total, txt))
+        return True
+
+    optimize(m, ps, Objective(), pop_size=6, generations=2,
+             polish=True, progress=cb)
+
+    faze = lambda p: [t for _, _, t in seen if t.startswith(p)]
+    assert faze("výchozí populace"), "start se nehlásí"
+    assert len(faze("generace")) == 2
+    assert faze("doladění"), "doladění se nehlásí — právě tam to vypadalo zaseklé"
+    # ukazatel nesmí přetéct ani se vracet
+    tot = seen[-1][1]
+    assert all(g <= tot for g, _, _ in seen)
+    assert seen[-1][0] == tot
+
+
+def test_optimalizaci_lze_prerusit_v_doladeni():
+    from antopt import examples
+    from antopt.optimize import Objective, optimize, suggest_parameters
+
+    m = examples.yagi3_20m()
+    m.auto_segment(per_wavelength=20.0, min_seg=6)
+    ps = suggest_parameters(m)[:2]
+    calls = []
+
+    def cb(g, total, best, txt):
+        calls.append(txt)
+        return not txt.startswith("doladění")     # stop hned na začátku doladění
+
+    res = optimize(m, ps, Objective(), pop_size=6, generations=2,
+                   polish=True, progress=cb)
+    assert res.model is not None and res.history

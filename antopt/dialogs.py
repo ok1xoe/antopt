@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -717,3 +718,116 @@ def feedline_dialog(parent, z_load: complex, freq_mhz: float, z0: float):
         ("z0", "Vztažná impedance [Ω]", "f", z0),
     ], compute, height=14,
         note="Co uvidí vysílač na konci kabelu, včetně ztrát zvýšených odrazem.")
+
+
+# ==========================================================================
+#  Okno s průběhem dlouhého výpočtu
+# ==========================================================================
+class LogWindow(tk.Toplevel):
+    """Malé okno, do kterého se za běhu vypisuje průběh výpočtu.
+
+    Optimalizace umí běžet i minuty a nejdelší je závěrečné doladění.
+    Bez průběžného výpisu vypadá program zaseklý — jediné, co uživatel
+    vidí, je hlášku „ještě běží výpočet“ při dalším pokusu.
+    """
+
+    def __init__(self, parent, title: str = "Průběh výpočtu",
+                 on_stop: Optional[Callable] = None):
+        super().__init__(parent)
+        self.title(title)
+        self.transient(parent)
+        self.on_stop = on_stop
+        self._t0 = time.time()
+        self._done = False
+        self._phase = ""
+        self._phase_t0 = self._t0
+        self._phase_v0 = 0.0
+
+        body = ttk.Frame(self, padding=PAD)
+        body.pack(fill="both", expand=True)
+
+        self.lbl = ttk.Label(body, text="Startuji…", font=("TkDefaultFont", 10, "bold"))
+        self.lbl.pack(anchor="w")
+        self.pb = ttk.Progressbar(body, mode="determinate", length=460)
+        self.pb.pack(fill="x", pady=(4, PAD))
+
+        wrap = ttk.Frame(body)
+        wrap.pack(fill="both", expand=True)
+        self.txt = tk.Text(wrap, height=16, width=74, wrap="none",
+                           font=("TkFixedFont", 9))
+        sb = ttk.Scrollbar(wrap, orient="vertical", command=self.txt.yview)
+        self.txt.configure(yscrollcommand=sb.set)
+        self.txt.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        btn = ttk.Frame(body)
+        btn.pack(fill="x", pady=(PAD, 0))
+        self.b_stop = ttk.Button(btn, text="Zastavit", command=self._stop)
+        self.b_stop.pack(side="left")
+        self.b_close = ttk.Button(btn, text="Zavřít", command=self.destroy,
+                                  state="disabled")
+        self.b_close.pack(side="right")
+        self.protocol("WM_DELETE_WINDOW", self._try_close)
+
+    # ------------------------------------------------------------------
+    def alive(self) -> bool:
+        try:
+            return bool(self.winfo_exists())
+        except tk.TclError:
+            return False
+
+    def log(self, text: str, stamp: bool = True) -> None:
+        if not self.alive():
+            return
+        pre = f"[{time.time() - self._t0:6.1f} s]  " if stamp else " " * 13
+        self.txt.insert("end", pre + text + "\n")
+        self.txt.see("end")
+
+    def step(self, value: float, maximum: float, headline: str = "") -> None:
+        """Posune ukazatel. Odhad zbývajícího času se počítá zvlášť pro
+        každou fázi — generace a doladění mají velmi různé tempo, takže
+        společný odhad by na začátku doladění lhal o řád."""
+        if not self.alive():
+            return
+        self.pb.configure(maximum=max(1.0, maximum), value=min(value, maximum))
+        if not headline:
+            return
+        now = time.time()
+        if headline != self._phase:
+            self._phase = headline
+            self._phase_t0 = now
+            self._phase_v0 = value
+        eta = ""
+        done = value - self._phase_v0
+        if 0 < value < maximum and done > 0:
+            rest = (now - self._phase_t0) * (maximum - value) / done
+            if rest < 90:
+                eta = f"   zbývá ~{rest:.0f} s"
+            elif rest < 5400:
+                eta = f"   zbývá ~{rest / 60:.0f} min"
+            else:
+                eta = "   zbývá hodně"
+        self.lbl.configure(text=f"{headline}{eta}")
+
+    def finish(self, headline: str = "Hotovo") -> None:
+        if not self.alive():
+            return
+        self.pb.configure(value=self.pb["maximum"])
+        self.lbl.configure(text=f"{headline}   ({time.time() - self._t0:.1f} s)")
+        self._done = True
+        self.b_stop.configure(state="disabled")
+        self.b_close.configure(state="normal")
+
+    # ------------------------------------------------------------------
+    def _stop(self):
+        self.log("← přerušeno uživatelem, dokončuji poslední krok…")
+        self.b_stop.configure(state="disabled")
+        if self.on_stop:
+            self.on_stop()
+
+    def _try_close(self):
+        if self._done:
+            self.destroy()
+        else:
+            self.log("Okno zavřu, až výpočet doběhne. Přerušit jde tlačítkem "
+                     "„Zastavit“.", stamp=False)
