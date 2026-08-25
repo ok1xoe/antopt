@@ -97,15 +97,38 @@ model a proběhne krátkou optimalizaci včetně doladění. Tyhle věci se impo
 až za běhu, takže bez téhle kontroly by chybějící kus vyplaval třeba až
 uprostřed dlouhé optimalizace.
 
+### Instalační balík
+
+Když se má program rozdat dál, hodí se místo holé aplikace instalátor.
+
+**macOS — DMG.** Po `build_macos.command` poklepat na
+`build/build_dmg.command`. Vznikne `dist/AntOpt-1.0.dmg`: obraz s aplikací,
+odkazem na složku Aplikace (stačí přetáhnout) a krátkým návodem. Používá
+systémový `hdiutil`, nic dalšího instalovat netřeba.
+
+**Windows — MSI.** Po `build_windows.bat` spustit `build\build_msi.bat`.
+Vznikne `dist\AntOpt-1.0.msi`, který instaluje do Program Files, udělá
+zástupce v nabídce Start i na ploše a jde odinstalovat přes Aplikace
+a funkce. Potřebuje [WiX Toolset v3](https://github.com/wixtoolset/wix3/releases)
+v `PATH` — seznam souborů si `heat.exe` projde sám, ručně se nic nevypisuje.
+
+Definice instalátoru je `build/windows/antopt.wxs`. Ověřená: sestavená
+zkušebně přes `wixl` dala platný MSI se 733 soubory, oběma zástupci
+i ikonou.
+
 ### Předání někomu dalšímu
 
-Aplikace není podepsaná vývojářským certifikátem, takže ji macOS na cizím
-počítači napoprvé nepustí. Řešení je klepnout na ni pravým tlačítkem a dát
-**Otevřít**, případně:
+Aplikace ani instalátory nejsou podepsané vývojářským certifikátem. Na macOS
+proto aplikaci cizí počítač napoprvé nepustí — klepnout na ni pravým tlačítkem
+a dát **Otevřít**, případně:
 
 ```bash
 xattr -dr com.apple.quarantine /cesta/AntOpt.app
 ```
+
+Na Windows ukáže SmartScreen modré okno „Systém Windows ochránil váš počítač“;
+pod **Další informace** je tlačítko Přesto spustit. Odstranit to jde jen
+podpisem od certifikační autority, což je placená záležitost.
 
 ---
 

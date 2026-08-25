@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Definice instalátoru AntOpt pro Windows (WiX v3).
+
+  Seznam souborů se sem nevypisuje ručně — vygeneruje ho heat.exe
+  (na Linuxu wixl-heat) do souboru files.wxs a sáhne se na něj přes
+  ComponentGroupRef "AppFiles".
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="AntOpt"
+           Language="1029"
+           Codepage="1250"
+           Version="1.0.0"
+           Manufacturer="AntOpt"
+           UpgradeCode="8f2c7a41-5d3e-4c76-9b1a-3e6d2f8c40b7">
+
+    <Package InstallerVersion="300"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Manufacturer="AntOpt"
+             Description="AntOpt - modelovani a optimalizace anten"
+             Languages="1029"
+             SummaryCodepage="1250" />
+
+    <Media Id="1" Cabinet="antopt.cab" EmbedCab="yes" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="AntOpt" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="AppMenuDir" Name="AntOpt" />
+      </Directory>
+      <Directory Id="DesktopFolder" Name="Desktop" />
+    </Directory>
+
+    <DirectoryRef Id="AppMenuDir">
+      <Component Id="Zastupci" Guid="3b91d0c2-7e45-4a18-8f52-1c9a6b74e2d3">
+        <Shortcut Id="MenuShortcut"
+                  Name="AntOpt"
+                  Description="Modelovani a optimalizace anten"
+                  Target="[INSTALLDIR]AntOpt.exe"
+                  WorkingDirectory="INSTALLDIR"
+                  Icon="AntOptIcon.exe" />
+        <Shortcut Id="DesktopShortcut"
+                  Directory="DesktopFolder"
+                  Name="AntOpt"
+                  Target="[INSTALLDIR]AntOpt.exe"
+                  WorkingDirectory="INSTALLDIR"
+                  Icon="AntOptIcon.exe" />
+        <RemoveFolder Id="OdstranMenuDir" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\AntOpt"
+                       Name="installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Icon Id="AntOptIcon.exe" SourceFile="icon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AntOptIcon.exe" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <Feature Id="Hlavni" Title="AntOpt" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="Zastupci" />
+    </Feature>
+  </Product>
+</Wix>

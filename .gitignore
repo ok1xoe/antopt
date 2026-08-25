@@ -5,3 +5,6 @@ dist/
 build/work/
 build/icon.iconset/
 *.spec.bak
+build/windows/files.wxs
+build/windows/icon.ico
+build/windows/obj/
