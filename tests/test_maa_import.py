@@ -312,3 +312,72 @@ def test_bez_rozpisu_vyjde_antena_znatelne_jinak():
     b = analysis.analyse(fileio.from_maa(_maa_ok1m(taper=False))[0])
     assert abs(a.zin - b.zin) > 8.0
     assert a.gain_dbi - b.gain_dbi > 0.5
+
+
+# --------------------------------------------------------------------------
+# skutečná struktura souboru: ***Wires***, $$$Taper wire set$$$, z = 0
+# --------------------------------------------------------------------------
+REAL_MAA = """*** MMANA-GAL antenna file ***
+OK1M-14-21-28_9el_v0.3_20m_15m_10m
+14.200
+***Wires***
+9
+-2.75, -5.5, 0.0, -2.75, 5.5, 0.0, -0.001, -1
+0.0, -5.16, 0.0, 0.0, 5.16, 0.0, -0.001, -1
+-0.26, -3.485, 0.0, -0.26, 3.485, 0.0, -0.002, -1
+0.22, -2.53, 0.0, 0.22, 2.53, 0.0, 0.008, -1
+-2.2, -3.575, 0.0, -2.2, 3.575, 0.0, -0.002, -1
+-1.53, -2.552, 0.0, -1.53, 2.552, 0.0, 0.008, -1
+1.198, -3.33, 0.0, 1.198, 3.33, 0.0, -0.002, -1
+0.693, -2.441, 0.0, 0.693, 2.441, 0.0, 0.008, -1
+2.44, -2.348, 0.0, 2.44, 2.348, 0.0, 0.008, -1
+***Source***
+1
+w2c, 0.0, 1.0
+***Load***
+0
+$$$Taper wire set$$$
+3
+-0.001, 0, 2.4, 0.015, 1.2, 0.0125, 1.2, 0.01, 99999.9, 0.008 -0.002, 0, 2.4, 0.01, 99999.9, 0.008
+-0.003, 0, 99999.9, 0.015
+***G/H/M/R/AzEl/X***
+2, 12.0, 0, 50, 0, 0, 0
+***End***
+"""
+
+
+def test_realna_struktura_souboru():
+    m, warn = fileio.from_maa(REAL_MAA)
+    assert m.freq_mhz == pytest.approx(14.2)
+    els = go.find_elements(m)
+    assert len(els) == 9
+    # oba rozpisy jsou na jednom řádku za sebou — musí se najít oba
+    by_x = {round(e.position_x, 4): e for e in els}
+    assert [round(s.radius * 2000) for s in
+            go.element_sections(m, by_x[-2.75].wires)] == [30, 25, 20, 16]
+    assert [round(s.radius * 2000) for s in
+            go.element_sections(m, by_x[-2.2].wires)] == [20, 16]
+    assert [round(s.radius * 2000) for s in
+            go.element_sections(m, by_x[0.22].wires)] == [16]
+    driven = by_x[0.0]
+    assert m.sources[0].wire in driven.wires
+
+
+def test_vyska_ze_sekce_ghmr():
+    """Model leží v z = 0 — druhé pole G/H/M/R je pak výška, ne vodivost."""
+    m, warn = fileio.from_maa(REAL_MAA)
+    assert m.lies_on_ground()
+    assert getattr(m, "_maa_height", None) == pytest.approx(12.0)
+    assert m.ground.sigma == pytest.approx(0.005)   # ne 12 mS/m
+    assert any("hodnota 12" in w for w in warn)
+
+
+def test_realny_soubor_po_zvednuti_trefi_autora():
+    from antopt import analysis
+    m, _ = fileio.from_maa(REAL_MAA)
+    go.move(m, dz=getattr(m, "_maa_height"))
+    r = analysis.analyse(m)
+    assert r.zin.real == pytest.approx(49.2, abs=3.0)
+    assert r.zin.imag == pytest.approx(2.6, abs=3.0)
+    assert r.gain_dbi == pytest.approx(11.4, abs=0.3)
+    assert r.elevation_deg == pytest.approx(23.7, abs=1.0)

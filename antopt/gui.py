@@ -1939,8 +1939,9 @@ class App(ttk.Frame):
                 f"zadává zvlášť.\n\nZvednout model na skutečnou výšku?"):
             return
         lam = self.model.wavelength
+        guess = getattr(self.model, "_maa_height", None) or round(lam / 2, 2)
         v = dlg.ask_form(self.master, "Výška nad zemí",
-                         [("h", "Výška středu antény [m]", "f", round(lam / 2, 2))])
+                         [("h", "Výška středu antény [m]", "f", round(guess, 2))])
         if not v or v["h"] <= 0:
             return
         go.move(self.model, dz=float(v["h"]))

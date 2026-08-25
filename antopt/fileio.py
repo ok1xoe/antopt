@@ -167,24 +167,30 @@ def _maa_taper_table(lines: List[str]) -> dict:
     out: dict = {}
     for s in lines:
         s = s.strip()
-        if not s or s.startswith("*") or s.startswith("#"):
+        if not s or s[0] in "*#$":
             continue
         v = _nums(s)
-        if len(v) < 4 or v[0] >= 0 or v[0] <= -0.5:
-            continue
         if not any(abs(x - MAA_TAPER_END) < 1.0 for x in v):
             continue
-        pairs = []
-        rest = v[2:] if abs(v[1]) < 1e-12 else v[1:]
-        for k in range(0, len(rest) - 1, 2):
-            ln, rad = rest[k], rest[k + 1]
-            if rad <= 0 or ln <= 0:
-                break
-            pairs.append((ln, rad))
-            if abs(ln - MAA_TAPER_END) < 1.0:
-                break
-        if len(pairs) >= 2:
-            out[round(v[0], 6)] = pairs
+        # na jednom řádku může být i víc rozpisů za sebou — každý začíná
+        # svým záporným klíčem
+        starts = [k for k, x in enumerate(v) if -0.5 < x < 0]
+        for si, k0 in enumerate(starts):
+            k1 = starts[si + 1] if si + 1 < len(starts) else len(v)
+            chunk = v[k0:k1]
+            if len(chunk) < 4:
+                continue
+            rest = chunk[2:] if abs(chunk[1]) < 1e-12 else chunk[1:]
+            pairs = []
+            for k in range(0, len(rest) - 1, 2):
+                ln, rad = rest[k], rest[k + 1]
+                if rad <= 0 or ln <= 0:
+                    break
+                pairs.append((ln, rad))
+                if abs(ln - MAA_TAPER_END) < 1.0:
+                    break
+            if pairs and abs(pairs[-1][0] - MAA_TAPER_END) < 1.0:
+                out[round(chunk[0], 6)] = pairs
     return out
 
 
@@ -327,6 +333,7 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
     # a s úplně jinou impedancí.
     taper_defs = _maa_taper_table(lines)
     taper_hits: List[Tuple[int, float]] = []
+    maybe_height = [None]
 
     # Dráty se čtou, dokud řádky vypadají jako dráty — ne jen deklarovaný počet.
     # Kdyby se počet přečetl špatně, zbytek geometrie by se tiše zahodil.
@@ -389,8 +396,12 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
         if not s:
             continue
         low = s.lower()
-        if s.startswith("*"):
-            if "source" in low:
+        if s[0] in "*$":
+            # MMANA odděluje sekce hvězdičkami i dolary
+            # (***Wires***, $$$Taper wire set$$$)
+            if "taper" in low:
+                section, pending = "taper", None
+            elif "source" in low:
                 section, pending = "src", None
             elif "load" in low:
                 section, pending = "load", None
@@ -403,6 +414,8 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
             continue
         if s.startswith("#"):
             continue
+        if section == "taper":
+            continue                       # rozpisy trubek se čtou zvlášť předem
 
         if section == "src":
             if pending is None:
@@ -430,6 +443,12 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
                     sigma = v[1] / 1000.0 if len(v) > 1 else 0.005
                     eps = v[2] if len(v) > 2 and 1.0 <= v[2] <= 90.0 else 13.0
                     model.ground = Ground("real", eps, max(sigma, 1e-5))
+                    # Sekce se jmenuje G/H/M/R — druhé pole je podle názvu
+                    # výška, podle jiné dokumentace vodivost. Rozhodne se
+                    # až podle geometrie (viz níž): model položený v z = 0
+                    # se zapnutou zemí nedává smysl, takže tam jde o výšku.
+                    if len(v) > 1:
+                        maybe_height[0] = float(v[1])
                 if len(v) > 3 and v[3] in (50.0, 75.0, 112.0, 200.0, 300.0, 450.0, 600.0):
                     model.z0 = v[3]
                 if t == -1:
@@ -498,8 +517,22 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
     if not model.wires:
         raise ValueError("Soubor neobsahuje žádné dráty.")
 
+    h = maybe_height[0]
+    if h is not None and model.lies_on_ground() and 0.1 <= h <= 200.0:
+        # druhé pole je výška, ne vodivost — vodivost se vrátí na výchozí
+        setattr(model, "_maa_height", h)
+        model.ground = Ground("real", model.ground.eps_r, 0.005)
+    else:
+        h = None
     if model.lies_on_ground():
-        warn.append(
+        if h:
+            warn.append(
+                f"Celá anténa ({len(model.wires)} drátů) leží v rovině z = 0 — "
+                f"MMANA takové modely kreslí kolem počátku a výšku drží zvlášť. "
+                f"V sekci G/H/M/R je hodnota {h:g}; jestli je to výška nad zemí, "
+                f"model se o ni musí zvednout, jinak je zkratovaný do země.")
+        else:
+            warn.append(
             f"Celá anténa ({len(model.wires)} drátů) leží v rovině z = 0 a zem je "
             f"zapnutá — takhle je zkratovaná do země a výsledky nedávají smysl. "
             f"MMANA takové modely kreslí kolem počátku a výšku zadává zvlášť; "
