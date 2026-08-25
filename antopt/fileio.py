@@ -172,7 +172,7 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
     # nesmí stát kmitočet. Trojice (kmitočet, počet drátů, dráty) se proto
     # bere jako celek a ověřuje se: za počtem drátů musí opravdu následovat
     # tolik řádků s osmi čísly. Když to nesedí, zkusí se další kandidát.
-    def _payload(idx: int) -> Optional[Tuple[float, int, int]]:
+    def _payload(idx: int, strict: bool = True) -> Optional[Tuple[float, int, int]]:
         """(kmitočet, počet drátů, index prvního drátu) pro kandidáta na řádku idx."""
         v = _nums(lines[idx])
         if not v or not (0.001 <= v[0] <= 300000.0):
@@ -198,26 +198,44 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
                 if len(_nums(t)) < 8:
                     return None
                 seen += 1
-            return (v[0], n, j + 1) if seen == n else None
+            if seen != n:
+                return None
+            # Přednost dostane kandidát, za jehož posledním drátem už další
+            # řádek s osmi čísly nenásleduje — jinak by šlo o špatně přečtený
+            # počet drátů. Když takový kandidát není, bere se i tenhle
+            # (dráty se stejně čtou greedy a nesoulad se ohlásí).
+            while strict and k < len(lines):
+                t = lines[k].strip()
+                k += 1
+                if not t or t.startswith("*") or t.startswith("#"):
+                    break
+                if len(_nums(t)) >= 8:
+                    return None
+                break
+            return v[0], n, j + 1
         return None
 
     name = ""
     head: Optional[Tuple[float, int, int]] = None
-    for idx in range(len(lines)):
-        s = lines[idx].strip()
-        if not s:
-            continue
-        core = s.strip("*").strip()
-        if not core:
-            continue
-        if _looks_numeric(core):
-            head = _payload(idx)
-            if head:
-                break
-        else:
-            # název antény je poslední textový řádek před kmitočtem,
-            # předchozí bývá jen hlavička souboru („MMANA-GAL antenna file“)
-            name = core
+    for strict in (True, False):
+        name = ""
+        for idx in range(len(lines)):
+            s = lines[idx].strip()
+            if not s:
+                continue
+            core = s.strip("*").strip()
+            if not core:
+                continue
+            if _looks_numeric(core):
+                head = _payload(idx, strict)
+                if head:
+                    break
+            else:
+                # název antény je poslední textový řádek před kmitočtem,
+                # předchozí bývá jen hlavička souboru („MMANA-GAL antenna file“)
+                name = core
+        if head:
+            break
     if head is None:
         raise ValueError("Hlavička souboru nedává smysl — nenašel jsem "
                          "kmitočet a počet drátů.")
@@ -225,16 +243,27 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
 
     model = Model(name=name or "import MMANA", freq_mhz=freq)
 
+    # Dráty se čtou, dokud řádky vypadají jako dráty — ne jen deklarovaný počet.
+    # Kdyby se počet přečetl špatně, zbytek geometrie by se tiše zahodil.
     read = 0
     n_taper = n_negr = 0
-    while i < len(lines) and read < n_wires:
+    while i < len(lines):
         s = lines[i].strip()
-        i += 1
-        if not s or s.startswith("*") or s.startswith("#"):
+        if not s or s.startswith("#"):
+            i += 1
+            continue
+        if s.startswith("*"):
+            if read >= n_wires:
+                break
+            i += 1
             continue
         v = _nums(s)
         if len(v) < 8:
+            if read >= n_wires:
+                break
+            i += 1
             continue
+        i += 1
         x1, y1, z1, x2, y2, z2, r, ns = v[:8]
         nseg = int(ns)
         if nseg <= 0:
@@ -246,6 +275,9 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
             r = abs(r) / 1000.0
         model.wires.append(Wire(x1, y1, z1, x2, y2, z2, max(r, 1e-5), max(nseg, 0)))
         read += 1
+    if read != n_wires:
+        warn.append(f"Hlavička hlásí {n_wires} drátů, v souboru jich je {read} "
+                    f"— načteno všech {read}.")
 
     # další sekce
     section = None
@@ -308,13 +340,18 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
         model.sources.append(Source(0, 0.5, 1.0))
 
     if n_negr:
-        warn.append(f"Poloměr zadaný záporně (v mm) přepočten na metry "
-                    f"— {n_negr}× . Hodnota je stejná, jen v jiných jednotkách.")
+        warn.append(f"{n_negr}× poloměr zadaný záporně = v milimetrech, přepočteno "
+                    f"na metry. Jen jiná jednotka, průměry trubek zůstávají.")
     if n_taper:
         warn.append(
-            f"Zúžená segmentace MMANA (-1/-2/-3) nahrazena rovnoměrnou — {n_taper}×. "
-            f"Je to způsob, jak vystačit s méně segmenty, ne jiný model: "
-            f"program segmentuje hustěji (45/λ), takže je výsledek stejný.")
+            f"{n_taper}× nerovnoměrné dělení drátu na segmenty (MMANA -1/-2/-3) "
+            f"nahrazeno rovnoměrným.\n"
+            f"POZOR, tohle NENÍ o zúžených prvcích: týká se to jen toho, na kolik "
+            f"dílků se drát krájí pro výpočet, ne průměrů trubek. Prvek složený "
+            f"z trubek různého průměru se importuje se všemi průměry.\n"
+            f"MMANA krájí segmenty ke koncům drátu nakrátko, aby vystačila "
+            f"s menším počtem. Tenhle program krájí rovnoměrně, ale hustěji "
+            f"(45 segmentů na vlnovou délku), takže vyjde totéž.")
 
     # segmenty doplň jen tam, kde je soubor nezadal
     explicit = {i: w.nseg for i, w in enumerate(model.wires) if w.nseg > 0}

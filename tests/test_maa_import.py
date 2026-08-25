@@ -61,12 +61,12 @@ def test_rozbita_hlavicka_je_chyba_ne_nesmysl():
 def test_zaporny_polomer_je_v_mm():
     m, warn = fileio.from_maa(_maa(["14.150"], radius="-12.5"))
     assert all(w.radius == pytest.approx(0.0125) for w in m.wires)
-    assert sum("Poloměr" in w for w in warn) == 1, "hláška má být jedna, ne devět"
+    assert sum("v milimetrech" in w for w in warn) == 1, "hláška má být jedna, ne devět"
 
 
 def test_zuzena_segmentace_da_jednu_hlasku():
     m, warn = fileio.from_maa(_maa(["14.150"], seg="-1"))
-    taper = [w for w in warn if "Zúžená segmentace" in w]
+    taper = [w for w in warn if "na segmenty" in w]
     assert len(taper) == 1 and "9×" in taper[0]
     assert all(w.nseg >= 6 for w in m.wires)
 
@@ -120,3 +120,43 @@ def test_collapse_nespojuje_ruzne_hlasky():
     out = collapse_messages(["Drát 1: nulová délka.", "Drát 2: pod zemí (z < 0).",
                              "Model nemá žádný zdroj."])
     assert len(out) == 3
+
+
+# --------------------------------------------------------------------------
+# zúžené PRVKY (mechanika) vs zúžená SEGMENTACE (výpočet) — dvě různé věci
+# --------------------------------------------------------------------------
+def _maa_tapered_elements(n_wires_decl=None, seg="-1"):
+    """3prvková Yagi, každý prvek ze tří trubek 25/20/16 na každé polovině."""
+    sec = [(0.9939, -25.0), (0.7454, -20.0), (0.7454, -16.0)]
+    w = []
+    for x in (-1.05, 0.0, 1.03):
+        for sign in (-1, +1):
+            t = 0.0
+            for L, d in sec:
+                a, b = (t, t + L) if sign > 0 else (-(t + L), -t)
+                w.append(f"{x}, {a:.4f}, 12.0, {x}, {b:.4f}, 12.0, {d / 2:.1f}, {seg}")
+                t += L
+    head = ["*** MMANA-GAL antenna file ***", "OK1M 3el zúžené prvky", "28.400"]
+    return "\n".join(head + [str(n_wires_decl or len(w))] + w +
+                     ["***Source***", "1", "w7b, 0.0, 1.0", "***Load***", "0",
+                      "***G/H/M/R/AzEl/X***", "2, 5.0, 0, 50, 0, 0, 0", "***End***"])
+
+
+def test_zuzene_prvky_se_importuji_se_vsemi_prumery():
+    """Zúžená segmentace se nahrazuje, ale průměry trubek zůstávají."""
+    m, warn = fileio.from_maa(_maa_tapered_elements())
+    assert len(m.wires) == 18
+    els = go.find_elements(m)
+    assert len(els) == 3
+    for el in els:
+        secs = go.element_sections(m, el.wires)
+        assert [round(s.radius * 2000) for s in secs] == [25, 20, 16]
+        assert el.length == pytest.approx(2 * (0.9939 + 0.7454 + 0.7454), abs=1e-6)
+    assert any("NENÍ o zúžených prvcích" in w for w in warn)
+
+
+def test_spatny_pocet_dratu_se_nezahodi_tise():
+    """Kdyby se počet drátů přečetl špatně, nesmí se zbytek geometrie ztratit."""
+    m, warn = fileio.from_maa(_maa_tapered_elements(n_wires_decl=9))
+    assert len(m.wires) == 18, "polovina prvků by se tiše zahodila"
+    assert len(go.find_elements(m)) == 3
