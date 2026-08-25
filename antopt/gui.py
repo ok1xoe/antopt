@@ -612,17 +612,68 @@ class App(ttk.Frame):
 
         right = ttk.Frame(tab)
         right.pack(side="left", fill="both", expand=True, padx=(PAD, 0))
-        self.txt_opt = tk.Text(right, height=14, width=52, wrap="word")
+        nb = ttk.Notebook(right)
+        nb.pack(fill="both", expand=True)
+        self.nb_opt = nb
+
+        # --- co se změnilo (hlavní výstup optimalizace)
+        f_ch = ttk.Frame(nb, padding=PAD)
+        nb.add(f_ch, text="Změny rozměrů")
+        cols = ("co", "pred", "po", "diff", "pct", "mez")
+        self.tv_chg = ttk.Treeview(f_ch, columns=cols, show="headings", height=11)
+        for k, t, w_, a in (("co", "co se měnilo", 210, "w"), ("pred", "před", 92, "e"),
+                            ("po", "po", 92, "e"), ("diff", "rozdíl", 92, "e"),
+                            ("pct", "%", 62, "e"), ("mez", "poznámka", 96, "w")):
+            self.tv_chg.heading(k, text=t)
+            self.tv_chg.column(k, width=w_, anchor=a)
+        sb_ch = ttk.Scrollbar(f_ch, orient="vertical", command=self.tv_chg.yview)
+        self.tv_chg.configure(yscrollcommand=sb_ch.set)
+        self.tv_chg.pack(side="left", fill="both", expand=True)
+        sb_ch.pack(side="right", fill="y")
+        # Směr změny rozměru není „lepší“ ani „horší“, takže se nebarví.
+        # Barva je jen pro to, co si žádá pozornost: beze změny a doraz na mez.
+        self.tv_chg.tag_configure("same", foreground="#888888")
+        self.tv_chg.tag_configure("bound", background="#fff3e0",
+                                  foreground="#a05000")
+
+        # --- co to udělalo s vlastnostmi antény
+        f_pr = ttk.Frame(nb, padding=PAD)
+        nb.add(f_pr, text="Vlastnosti")
+        cols2 = ("f", "vel", "pred", "po", "diff")
+        self.tv_prop = ttk.Treeview(f_pr, columns=cols2, show="headings", height=11)
+        for k, t, w_, a in (("f", "kmitočet", 90, "e"), ("vel", "veličina", 120, "w"),
+                            ("pred", "před", 100, "e"), ("po", "po", 100, "e"),
+                            ("diff", "rozdíl", 100, "e")):
+            self.tv_prop.heading(k, text=t)
+            self.tv_prop.column(k, width=w_, anchor=a)
+        sb_pr = ttk.Scrollbar(f_pr, orient="vertical", command=self.tv_prop.yview)
+        self.tv_prop.configure(yscrollcommand=sb_pr.set)
+        self.tv_prop.pack(side="left", fill="both", expand=True)
+        sb_pr.pack(side="right", fill="y")
+        self.tv_prop.tag_configure("lepsi", foreground="#00695c")
+        self.tv_prop.tag_configure("horsi", foreground="#b71c1c")
+        self.tv_prop.tag_configure("same", foreground="#888888")
+
+        # --- průběh hledání
+        f_hi = ttk.Frame(nb)
+        nb.add(f_hi, text="Průběh")
+        self.fig_opt = Figure(figsize=(4.6, 2.6), dpi=100)
+        self.ax_opt = self.fig_opt.add_subplot(111)
+        self.cv_opt = FigureCanvasTkAgg(self.fig_opt, master=f_hi)
+        self.cv_opt.get_tk_widget().pack(fill="both", expand=True)
+
+        # --- textový výpis (na zkopírování)
+        f_tx = ttk.Frame(nb)
+        nb.add(f_tx, text="Výpis")
+        self.txt_opt = tk.Text(f_tx, height=14, width=52, wrap="word")
         self.txt_opt.pack(fill="both", expand=True)
         self.txt_opt.configure(font=("TkFixedFont", 10))
-        self.fig_opt = Figure(figsize=(4.6, 2.3), dpi=100)
-        self.ax_opt = self.fig_opt.add_subplot(111)
-        self.cv_opt = FigureCanvasTkAgg(self.fig_opt, master=right)
-        self.cv_opt.get_tk_widget().pack(fill="both", expand=True, pady=(PAD, 0))
         bb = ttk.Frame(right)
-        bb.pack(fill="x")
+        bb.pack(fill="x", pady=(PAD, 0))
         ttk.Button(bb, text="Přijmout výsledek do modelu",
                    command=self.accept_opt).pack(side="left")
+        ttk.Button(bb, text="Zkopírovat tabulku",
+                   command=self.copy_changes).pack(side="left", padx=6)
         self._opt_candidate: Optional[Model] = None
 
     # ==================================================================
@@ -1542,8 +1593,21 @@ class App(ttk.Frame):
                 log.log(txt)
                 last[0] = now
 
+        before = [read_param(base, p) for p in params]
+
         def done(res):
+            na_mezi = self._fill_changes(params, before, res.values,
+                                         start, res.evaluation)
+            self.nb_opt.select(0)
             if log.alive():
+                if na_mezi:
+                    log.log("")
+                    kus = "proměnná skončila" if len(na_mezi) == 1 else "proměnné skončily" if len(na_mezi) < 5 else "proměnných skončilo"
+                    log.log(f"POZOR: {len(na_mezi)} {kus} na kraji "
+                            f"povoleného rozsahu — rozšiř meze a spusť znovu, "
+                            f"optimum je nejspíš dál:", stamp=False)
+                    for t in na_mezi:
+                        log.log(f"   • {t}", stamp=False)
                 log.log("-" * 66, stamp=False)
                 log.log("hotovo:        " + res.evaluation.brief())
                 log.log(f"cena {start.cost:.3f} → {res.cost:.3f}   "
@@ -1580,6 +1644,91 @@ class App(ttk.Frame):
         if not self.worker.run(job, done, on_error=failed, on_progress=prog,
                                what="optimalizace"):
             log.destroy()
+
+    # ------------------------------------------------------------------
+    def _fill_changes(self, params, before, after, start_ev, end_ev):
+        """Naplní tabulku změn rozměrů a tabulku vlastností."""
+        from .optimize import param_unit
+
+        for t in (self.tv_chg, self.tv_prop):
+            for i in t.get_children():
+                t.delete(i)
+
+        self._chg_rows = []
+        na_mezi = []
+        for p, b, a in zip(params, before, after):
+            unit, dunit, mul, dec = param_unit(p.kind)
+            d = (a - b) * mul
+            # U poloh je procentní změna nesmysl (a u záporné souřadnice
+            # by měla i obrácené znaménko) — ukazuje se jen u rozměrů.
+            je_poloha = p.kind in ("posun_x", "posun_y", "vyska", "souradnice",
+                                   "prvek_x", "prvek_y", "prvek_z", "vyska_vse")
+            pct = (a - b) / abs(b) * 100.0 if abs(b) > 1e-12 else float("nan")
+            span = p.hi - p.lo
+            note = ""
+            beze_zmeny = abs(a - b) <= 10 ** (-dec) / 2
+            tag = "same" if beze_zmeny else ""
+            if span > 0:
+                if a - p.lo < 0.02 * span:
+                    note, tag = "na dolní mezi", "bound"
+                elif p.hi - a < 0.02 * span:
+                    note, tag = "na horní mezi", "bound"
+            row = (p.describe(),
+                   f"{b:.{dec}f} {unit}",
+                   f"{a:.{dec}f} {unit}",
+                   ("—" if beze_zmeny else f"{d:+.1f} {dunit}"),
+                   ("—" if beze_zmeny or je_poloha or not np.isfinite(pct)
+                    else f"{pct:+.2f}"),
+                   note)
+            self.tv_chg.insert("", "end", values=row,
+                               tags=((tag,) if tag else ()))
+            self._chg_rows.append(row)
+            if tag == "bound":
+                na_mezi.append(p.describe())
+
+        # vlastnosti po kmitočtech
+        rows = []
+        for d0, d1 in zip(start_ev.detail, end_ev.detail):
+            f = f"{d1['f']:.3f} MHz"
+            for key, name, fmt, better in (
+                    ("gain", "zisk [dBi]", "{:.2f}", +1),
+                    ("fb", "F/B [dB]", "{:.1f}", +1),
+                    ("swr", "PSV", "{:.2f}", -1),
+                    ("r", "R [Ω]", "{:.1f}", 0),
+                    ("x", "X [Ω]", "{:+.1f}", 0)):
+                v0, v1 = d0[key], d1[key]
+                if not (np.isfinite(v0) and np.isfinite(v1)):
+                    continue
+                dv = v1 - v0
+                tag = "same"
+                if abs(dv) > 5e-3 and better:
+                    tag = "lepsi" if dv * better > 0 else "horsi"
+                r = (f, name, fmt.format(v0), fmt.format(v1), f"{dv:+.2f}")
+                self.tv_prop.insert("", "end", values=r, tags=(tag,))
+                rows.append(r)
+            self.tv_prop.insert("", "end", values=("", "", "", "", ""), tags=("same",))
+        self._prop_rows = rows
+        return na_mezi
+
+    def copy_changes(self):
+        """Zkopíruje obě tabulky do schránky jako text."""
+        rows = getattr(self, "_chg_rows", [])
+        if not rows:
+            messagebox.showinfo("Nic ke kopírování", "Nejdřív spusť optimalizaci.")
+            return
+        out = ["ZMĚNY ROZMĚRŮ",
+               f"{'co se měnilo':34s} {'před':>14s} {'po':>14s} "
+               f"{'rozdíl':>12s} {'%':>8s}  poznámka"]
+        for r in rows:
+            out.append(f"{r[0]:34s} {r[1]:>14s} {r[2]:>14s} {r[3]:>12s} "
+                       f"{r[4]:>8s}  {r[5]}")
+        out += ["", "VLASTNOSTI"]
+        for r in getattr(self, "_prop_rows", []):
+            out.append(f"{r[0]:>11s}  {r[1]:14s} {r[2]:>9s} → {r[3]:>9s}  {r[4]:>9s}")
+        txt = "\n".join(out)
+        self.master.clipboard_clear()
+        self.master.clipboard_append(txt)
+        self.set_status("Tabulka změn zkopírována do schránky.")
 
     def accept_opt(self):
         if self._opt_candidate is None:

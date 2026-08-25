@@ -42,6 +42,31 @@ PARAM_KINDS = {
 }
 
 
+# jednotka a měřítko rozdílu pro každý druh proměnné:
+#   (jednotka hodnoty, jednotka rozdílu, násobek pro rozdíl, počet desetin)
+PARAM_UNITS = {
+    "polomer": ("m", "mm", 1000.0, 4),
+    "azimut": ("°", "°", 1.0, 2),
+    "zenit": ("°", "°", 1.0, 2),
+    "zatez_r": ("Ω", "Ω", 1.0, 2),
+    "zatez_x": ("Ω", "Ω", 1.0, 2),
+    "zatez_l": ("µH", "µH", 1.0, 3),
+    "zatez_c": ("pF", "pF", 1.0, 2),
+    "zdroj_u": ("V", "V", 1.0, 3),
+    "zdroj_faze": ("°", "°", 1.0, 2),
+    "kmitocet": ("MHz", "kHz", 1000.0, 4),
+}
+
+
+def param_unit(kind: str):
+    """(jednotka, jednotka rozdílu, násobek rozdílu, desetin) pro druh proměnné.
+
+    Délky se zobrazují v metrech, ale rozdíl v milimetrech — o pár milimetrů
+    se prvky ladí a v metrech by to byly samé nuly.
+    """
+    return PARAM_UNITS.get(kind, ("m", "mm", 1000.0, 4))
+
+
 @dataclass
 class Parameter:
     kind: str

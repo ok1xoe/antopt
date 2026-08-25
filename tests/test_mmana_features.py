@@ -354,3 +354,13 @@ def test_optimalizaci_lze_prerusit_v_doladeni():
     res = optimize(m, ps, Objective(), pop_size=6, generations=2,
                    polish=True, progress=cb)
     assert res.model is not None and res.history
+
+
+def test_jednotky_promennych():
+    """Rozdíly délek se ukazují v milimetrech, úhly ve stupních."""
+    from antopt.optimize import param_unit
+    assert param_unit("prvek_delka") == ("m", "mm", 1000.0, 4)
+    assert param_unit("delka_konec")[1] == "mm"
+    assert param_unit("azimut") == ("°", "°", 1.0, 2)
+    assert param_unit("zatez_l")[0] == "µH"
+    assert param_unit("neznamy")[1] == "mm"          # rozumný výchozí
