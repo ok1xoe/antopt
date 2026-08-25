@@ -231,6 +231,7 @@ class App(ttk.Frame):
         self._build_pattern_tab()
         self._build_opt_tab()
         self.refresh_all()
+        self._update_engine_label()
 
     # ------------------------------------------------------------------ menu
     def _build_menu(self):
@@ -433,6 +434,8 @@ class App(ttk.Frame):
         self.nb.add(tab, text="Výpočet")
         top = ttk.Frame(tab)
         top.pack(fill="x")
+        row2 = ttk.Frame(tab)
+        row2.pack(fill="x", pady=(4, 0))
         ttk.Button(top, text="Spočítat (F5)", command=self.do_calc).pack(side="left")
         ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
         ttk.Label(top, text="Rozmítání od").pack(side="left")
@@ -451,20 +454,24 @@ class App(ttk.Frame):
         ttk.Button(top, text="Kolem kmitočtu ±5 %",
                    command=self.sweep_around).pack(side="left")
         ttk.Button(top, text="Rezonance", command=self.do_resonance).pack(side="left", padx=4)
-        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
-        ttk.Label(top, text="Jádro:").pack(side="left")
+
+        ttk.Label(row2, text="Výpočetní jádro:").pack(side="left")
         self.var_engine = tk.StringVar(value=engines.default_name())
-        cb_eng = ttk.Combobox(top, textvariable=self.var_engine, width=9,
-                              state="readonly", values=engines.available_engines())
-        cb_eng.pack(side="left", padx=3)
+        cb_eng = ttk.Combobox(row2, textvariable=self.var_engine, width=10,
+                              state="readonly",
+                              values=[e.name for e in engines.all_engines()])
+        cb_eng.pack(side="left", padx=4)
         cb_eng.bind("<<ComboboxSelected>>", lambda e: self._engine_changed())
-        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
-        ttk.Label(top, text="F/B výsek [°]:").pack(side="left")
+        self.lbl_engine = ttk.Label(row2, text="", foreground="#666")
+        self.lbl_engine.pack(side="left", padx=(2, 12))
+        ttk.Separator(row2, orient="vertical").pack(side="left", fill="y", padx=6)
+        ttk.Label(row2, text="F/B výsek [°]:").pack(side="left")
         self.var_fbsec = tk.StringVar(value="0")
-        ttk.Combobox(top, textvariable=self.var_fbsec, width=5, state="readonly",
-                     values=["0", "60", "90", "120", "180"]).pack(side="left", padx=3)
-        ttk.Button(top, text="Návrh přizpůsobení…",
-                   command=self.match_dialog).pack(side="left", padx=6)
+        ttk.Combobox(row2, textvariable=self.var_fbsec, width=5, state="readonly",
+                     values=["0", "60", "90", "120", "180"]).pack(side="left", padx=4)
+        ttk.Separator(row2, orient="vertical").pack(side="left", fill="y", padx=6)
+        ttk.Button(row2, text="Návrh přizpůsobení…",
+                   command=self.match_dialog).pack(side="left", padx=4)
 
         body = ttk.Frame(tab)
         body.pack(fill="both", expand=True, pady=PAD)
@@ -1543,13 +1550,37 @@ class App(ttk.Frame):
 
     def _engine_changed(self):
         name = self.engine_name()
+        prev = engines.default_name()
+        try:
+            eng = engines.get(name)          # ověří i dostupnost
+        except RuntimeError:
+            self.var_engine.set(prev)
+            messagebox.showinfo(
+                f"Jádro {name} zatím není nainstalované",
+                f"Jádro {name} potřebuje balíček PyNEC. Doinstaluj ho ve stejném "
+                f"prostředí, ve kterém běží AntOpt:\n\n"
+                f"    pip install PyNEC\n\n"
+                f"a program spusť znovu. Do té doby se počítá vlastním jádrem — "
+                f"ve volném prostoru a nad dokonalou zemí dává stejné výsledky, "
+                f"liší se až u reálné země.")
+            return
         engines.set_default(name)
         self.result = None
         self.sweep_results = []
         self.draw_geometry()
-        eng = engines.get(name)
+        self._update_engine_label()
         self.set_status(f"Jádro: {name} — {eng.description}  "
                         f"(přepočítej klávesou F5)")
+
+    def _update_engine_label(self):
+        if not hasattr(self, "lbl_engine"):
+            return
+        name = self.engine_name()
+        ok = name in engines.available_engines()
+        self.lbl_engine.configure(
+            text="(vlastní metoda momentů)" if name == "vlastní"
+            else ("(Sommerfeldova zem)" if ok else "(nenainstalováno)"),
+            foreground="#666" if ok else "#a05000")
 
     # ==================================================================
     #  průvodci a úpravy geometrie
