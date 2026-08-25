@@ -1922,8 +1922,28 @@ class App(ttk.Frame):
         self.opt_params = []
         self.refresh_all()
         if warn:
-            messagebox.showwarning("Import s výhradami", "\n".join(warn[:12]))
+            messagebox.showwarning("Import s výhradami", "\n\n".join(warn[:12]))
+        if m.lies_on_ground():
+            self._ask_lift_model()
         self.set_status(f"Importováno: {os.path.basename(p)}")
+
+    def _ask_lift_model(self):
+        """Model kreslený kolem počátku — nabídni zvednutí na skutečnou výšku."""
+        if not messagebox.askyesno(
+                "Anténa leží na zemi",
+                f"Všech {len(self.model.wires)} drátů leží v rovině z = 0 a zem je "
+                f"zapnutá — anténa je zkratovaná do země.\n\n"
+                f"MMANA takové modely kreslí kolem počátku a výšku nad zemí "
+                f"zadává zvlášť.\n\nZvednout model na skutečnou výšku?"):
+            return
+        lam = self.model.wavelength
+        v = dlg.ask_form(self.master, "Výška nad zemí",
+                         [("h", "Výška středu antény [m]", "f", round(lam / 2, 2))])
+        if not v or v["h"] <= 0:
+            return
+        go.move(self.model, dz=float(v["h"]))
+        self.refresh_all()
+        self.set_status(f"Model zvednut na {v['h']:.2f} m.")
 
     def export_as(self, fmt):
         ext = ".nec" if fmt == "nec" else ".maa"

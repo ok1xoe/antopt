@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import re
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from .model import Model, Wire, Source, Load, Ground
 
@@ -165,45 +165,68 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
         while i < len(lines) and not lines[i].strip():
             i += 1
 
-    name = ""
-    skip_blank()
-    if i < len(lines) and not _looks_numeric(lines[i]):
-        name = lines[i].strip().lstrip("*").strip()
-        i += 1
-    skip_blank()
-    while i < len(lines) and lines[i].strip() in ("*", "**", "***"):
-        i += 1
-    skip_blank()
+    # --- hlavička: název, kmitočet, počet drátů
+    #
+    # Hlaviček je v praxi několik podob — komentář, název antény, nebo obojí.
+    # Název přitom bývá plný číslic („OK1M-14-21-28_9el“), takže se z něj
+    # nesmí stát kmitočet. Trojice (kmitočet, počet drátů, dráty) se proto
+    # bere jako celek a ověřuje se: za počtem drátů musí opravdu následovat
+    # tolik řádků s osmi čísly. Když to nesedí, zkusí se další kandidát.
+    def _payload(idx: int) -> Optional[Tuple[float, int, int]]:
+        """(kmitočet, počet drátů, index prvního drátu) pro kandidáta na řádku idx."""
+        v = _nums(lines[idx])
+        if not v or not (0.001 <= v[0] <= 300000.0):
+            return None
+        j = idx + 1
+        while j < len(lines):
+            s = lines[j].strip()
+            if not s or s.startswith("*") or s.startswith("#"):
+                j += 1
+                continue
+            w = _nums(s)
+            if not w:
+                return None
+            n = int(w[0])
+            if not (1 <= n <= 5000) or w[0] != n:
+                return None
+            k, seen = j + 1, 0
+            while k < len(lines) and seen < n:
+                t = lines[k].strip()
+                k += 1
+                if not t or t.startswith("*") or t.startswith("#"):
+                    continue
+                if len(_nums(t)) < 8:
+                    return None
+                seen += 1
+            return (v[0], n, j + 1) if seen == n else None
+        return None
 
-    freq = 14.1
-    if i < len(lines):
-        n = _nums(lines[i])
-        if n:
-            freq = n[0]
-            i += 1
+    name = ""
+    head: Optional[Tuple[float, int, int]] = None
+    for idx in range(len(lines)):
+        s = lines[idx].strip()
+        if not s:
+            continue
+        core = s.strip("*").strip()
+        if not core:
+            continue
+        if _looks_numeric(core):
+            head = _payload(idx)
+            if head:
+                break
+        else:
+            # název antény je poslední textový řádek před kmitočtem,
+            # předchozí bývá jen hlavička souboru („MMANA-GAL antenna file“)
+            name = core
+    if head is None:
+        raise ValueError("Hlavička souboru nedává smysl — nenašel jsem "
+                         "kmitočet a počet drátů.")
+    freq, n_wires, i = head
 
     model = Model(name=name or "import MMANA", freq_mhz=freq)
 
-    # počet drátů: buď samostatně, nebo za hlavičkou ***Wires***
-    n_wires = None
-    while i < len(lines):
-        s = lines[i].strip()
-        if not s:
-            i += 1
-            continue
-        if s.startswith("*"):
-            i += 1
-            continue
-        nums = _nums(s)
-        if nums:
-            n_wires = int(nums[0])
-            i += 1
-            break
-        i += 1
-    if n_wires is None:
-        raise ValueError("V souboru není počet drátů.")
-
     read = 0
+    n_taper = n_negr = 0
     while i < len(lines) and read < n_wires:
         s = lines[i].strip()
         i += 1
@@ -217,9 +240,9 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
         if nseg <= 0:
             nseg = 0            # doplní se automaticky
             if int(ns) < 0:
-                warn.append("Zúžená segmentace (-1/-2/-3) nahrazena rovnoměrnou.")
+                n_taper += 1
         if r < 0:
-            warn.append("Záporný poloměr (poloměr v mm) přepočten.")
+            n_negr += 1
             r = abs(r) / 1000.0
         model.wires.append(Wire(x1, y1, z1, x2, y2, z2, max(r, 1e-5), max(nseg, 0)))
         read += 1
@@ -283,13 +306,32 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
     if not model.sources:
         warn.append("Soubor neobsahoval zdroj — vložen do středu prvního drátu.")
         model.sources.append(Source(0, 0.5, 1.0))
-    for w in model.wires:
-        if w.nseg <= 0:
-            w.nseg = 0
-    if any(w.nseg <= 0 for w in model.wires):
+
+    if n_negr:
+        warn.append(f"Poloměr zadaný záporně (v mm) přepočten na metry "
+                    f"— {n_negr}× . Hodnota je stejná, jen v jiných jednotkách.")
+    if n_taper:
+        warn.append(
+            f"Zúžená segmentace MMANA (-1/-2/-3) nahrazena rovnoměrnou — {n_taper}×. "
+            f"Je to způsob, jak vystačit s méně segmenty, ne jiný model: "
+            f"program segmentuje hustěji (45/λ), takže je výsledek stejný.")
+
+    # segmenty doplň jen tam, kde je soubor nezadal
+    explicit = {i: w.nseg for i, w in enumerate(model.wires) if w.nseg > 0}
+    if len(explicit) < len(model.wires):
         model.auto_segment()
+        for i, n in explicit.items():
+            model.wires[i].nseg = n
     if not model.wires:
         raise ValueError("Soubor neobsahuje žádné dráty.")
+
+    if model.lies_on_ground():
+        warn.append(
+            f"Celá anténa ({len(model.wires)} drátů) leží v rovině z = 0 a zem je "
+            f"zapnutá — takhle je zkratovaná do země a výsledky nedávají smysl. "
+            f"MMANA takové modely kreslí kolem počátku a výšku zadává zvlášť; "
+            f"zvedni model na skutečnou výšku (Úpravy → Posun, dz) nebo přepni "
+            f"na volný prostor.")
     return model, warn
 
 

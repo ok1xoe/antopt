@@ -1,0 +1,122 @@
+"""Import MMANA .maa — hlavička, jednotky, hlášky.
+
+Hlavička .maa je v praxi rozmanitá: někdy komentář, někdy název antény,
+někdy obojí. Název přitom bývá plný číslic („OK1M-14-21-28_9el“) a nesmí
+se z něj stát kmitočet — na tom se to dřív lámalo úplně tiše.
+"""
+from __future__ import annotations
+
+import pytest
+
+from antopt import fileio
+from antopt import geometry_ops as go
+from antopt.model import collapse_messages
+
+ELS = [(-2.0, 5.30), (-0.9, 5.05), (0.6, 4.90), (1.9, 3.55), (2.8, 3.40),
+       (3.9, 3.30), (5.2, 2.60), (6.1, 2.50), (7.0, 2.45)]
+
+
+def _maa(header, radius="-12.5", seg="-1", z=0.0, ground="2, 5.0, 0, 50, 0, 0, 0"):
+    lines = list(header) + [str(len(ELS))]
+    for x, L in ELS:
+        lines.append(f"{x:.4f}, {-L / 2:.4f}, {z}, {x:.4f}, {L / 2:.4f}, {z}, "
+                     f"{radius}, {seg}")
+    lines += ["***Source***", "1", "w2c, 0.0, 1.0",
+              "***Load***", "0",
+              "***G/H/M/R/AzEl/X***", ground, "***End***"]
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# hlavička
+# --------------------------------------------------------------------------
+@pytest.mark.parametrize("header", [
+    ["*** OK1M-14-21-28_9el_v0.3_20m_15m_10m ***", "14.150"],
+    ["*** MMANA-GAL antenna file ***", "OK1M-14-21-28_9el_v0.3", "14.150"],
+    ["OK1M 9el 20/15/10", "14.150"],
+    ["*** komentář ***", "", "9el tribander v0.3", "", "14.150"],
+    ["14.150"],
+])
+def test_kmitocet_se_nebere_z_nazvu(header):
+    m, _ = fileio.from_maa(_maa(header))
+    assert m.freq_mhz == pytest.approx(14.150)
+    assert len(m.wires) == len(ELS)
+
+
+def test_nazev_s_cislicemi_prezije():
+    m, _ = fileio.from_maa(
+        _maa(["*** MMANA ***", "OK1M-14-21-28_9el_v0.3", "14.150"]))
+    assert "OK1M" in m.name
+    assert m.freq_mhz == pytest.approx(14.150)
+
+
+def test_rozbita_hlavicka_je_chyba_ne_nesmysl():
+    with pytest.raises(ValueError):
+        fileio.from_maa("*** nic ***\nnějaký text\njiný text\n")
+
+
+# --------------------------------------------------------------------------
+# jednotky a segmentace
+# --------------------------------------------------------------------------
+def test_zaporny_polomer_je_v_mm():
+    m, warn = fileio.from_maa(_maa(["14.150"], radius="-12.5"))
+    assert all(w.radius == pytest.approx(0.0125) for w in m.wires)
+    assert sum("Poloměr" in w for w in warn) == 1, "hláška má být jedna, ne devět"
+
+
+def test_zuzena_segmentace_da_jednu_hlasku():
+    m, warn = fileio.from_maa(_maa(["14.150"], seg="-1"))
+    taper = [w for w in warn if "Zúžená segmentace" in w]
+    assert len(taper) == 1 and "9×" in taper[0]
+    assert all(w.nseg >= 6 for w in m.wires)
+
+
+def test_zadane_segmenty_se_neprepisou():
+    """Když soubor u části drátů segmenty určí, musí zůstat."""
+    txt = _maa(["14.150"], seg="-1").splitlines()
+    txt[2] = txt[2].rsplit(",", 1)[0] + ", 17"      # první drát dostane 17
+    m, _ = fileio.from_maa("\n".join(txt))
+    assert m.wires[0].nseg == 17
+    assert m.wires[1].nseg != 17                     # ostatní doplněny automaticky
+
+
+# --------------------------------------------------------------------------
+# model položený na zemi
+# --------------------------------------------------------------------------
+def test_anteny_v_rovine_z0_se_zemi_se_pozna():
+    m, warn = fileio.from_maa(_maa(["14.150"], z=0.0))
+    assert m.ground.kind == "real"
+    assert m.lies_on_ground()
+    assert any("z = 0" in w for w in warn)
+    msgs = m.validate()
+    assert len(msgs) == 1, "jedna souhrnná hláška, ne devět stejných"
+    assert "9 drátů" in msgs[0]
+
+
+def test_po_zvednuti_je_model_v_poradku():
+    m, _ = fileio.from_maa(_maa(["14.150"], z=0.0))
+    go.move(m, dz=12.0)
+    assert not m.lies_on_ground()
+    assert m.validate() == []
+
+
+def test_volny_prostor_v_rovine_z0_nevadi():
+    m, warn = fileio.from_maa(_maa(["14.150"], z=0.0, ground="0, 0, 0, 50, 0, 0, 0"))
+    assert m.ground.kind == "free"
+    assert not m.lies_on_ground()
+    assert not any("z = 0" in w for w in warn)
+
+
+# --------------------------------------------------------------------------
+# slučování hlášek
+# --------------------------------------------------------------------------
+def test_collapse_messages():
+    msgs = [f"Drát {i}: leží přesně na zemi." for i in (1, 2, 3, 7, 9)]
+    out = collapse_messages(msgs)
+    assert out == ["Dráty 1–3, 7, 9: leží přesně na zemi."]
+
+
+def test_collapse_nespojuje_ruzne_hlasky():
+    out = collapse_messages(["Drát 1: nulová délka.", "Drát 2: pod zemí (z < 0).",
+                             "Model nemá žádný zdroj."])
+    assert len(out) == 3

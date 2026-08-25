@@ -6,12 +6,58 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass, field, asdict
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 import numpy as np
 
 C0 = 299_792_458.0
+
+_WIRE_PREFIX = re.compile(r"^Drát (\d+): ")
+
+
+def _ranges(nums: Sequence[int]) -> str:
+    """1,2,3,7,9 -> '1–3, 7, 9'"""
+    nums = sorted(set(int(n) for n in nums))
+    parts, start, prev = [], nums[0], nums[0]
+    for n in nums[1:] + [None]:
+        if n == prev + 1:
+            prev = n
+            continue
+        parts.append(str(start) if start == prev else f"{start}–{prev}")
+        if n is None:
+            break
+        start = prev = n
+    return ", ".join(parts)
+
+
+def collapse_messages(msgs: Sequence[str]) -> List[str]:
+    """Sloučí hlášky, které se liší jen číslem drátu.
+
+    Devět stejných vět za sebou nikdo nečte — z „Drát 1: …“ až „Drát 9: …“
+    udělá jednu „Dráty 1–9: …“.
+    """
+    order: List[str] = []
+    groups: dict = {}
+    for m in msgs:
+        hit = _WIRE_PREFIX.match(m)
+        key = _WIRE_PREFIX.sub("\x00", m, count=1) if hit else m
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        if hit:
+            groups[key].append(int(hit.group(1)))
+    out: List[str] = []
+    for key in order:
+        nums = groups[key]
+        if not nums:
+            out.append(key)
+        elif len(nums) == 1:
+            out.append(key.replace("\x00", f"Drát {nums[0]}: ", 1))
+        else:
+            out.append(key.replace("\x00", f"Dráty {_ranges(nums)}: ", 1))
+    return out
 MU0 = 4.0e-7 * math.pi
 EPS0 = 1.0 / (MU0 * C0 * C0)
 ETA0 = math.sqrt(MU0 / EPS0)
@@ -233,12 +279,29 @@ class Model:
                 n += 1
             w.nseg = n
 
+    def lies_on_ground(self) -> bool:
+        """Leží celý model přesně v rovině z = 0 při zapnuté zemi?
+
+        Typicky u modelů z MMANA, které se kreslí kolem počátku a výška
+        nad zemí se zadává zvlášť. Se zapnutou zemí je taková geometrie
+        zkratovaná a výsledky nedávají smysl.
+        """
+        if self.ground.kind == "free" or not self.wires:
+            return False
+        return all(abs(w.z1) < 1e-9 and abs(w.z2) < 1e-9 for w in self.wires)
+
     def validate(self) -> List[str]:
         msgs = []
         lam = self.wavelength
+        if self.lies_on_ground():
+            return [f"Celá anténa ({len(self.wires)} drátů) leží v rovině z = 0, "
+                    f"a zem je zapnutá — takhle je zkratovaná do země. "
+                    f"Nejspíš jde o model kreslený kolem počátku, u kterého se "
+                    f"výška zadává zvlášť: zvedni ho (Úpravy → Posun, dz = výška "
+                    f"nad zemí), nebo přepni na volný prostor."]
         for i, w in enumerate(self.wires):
             if w.length <= 0:
-                msgs.append(f"Drát {i + 1} má nulovou délku.")
+                msgs.append(f"Drát {i + 1}: nulová délka.")
                 continue
             seg_len = w.length / max(w.nseg, 1)
             if w.radius <= 0:
@@ -254,15 +317,15 @@ class Model:
                 )
             if self.ground.kind != "free":
                 if min(w.z1, w.z2) < -1e-9:
-                    msgs.append(f"Drát {i + 1} je pod zemí (z < 0).")
+                    msgs.append(f"Drát {i + 1}: pod zemí (z < 0).")
                 if abs(w.z1) < 1e-9 and abs(w.z2) < 1e-9:
                     msgs.append(
-                        f"Drát {i + 1} leží přesně na zemi — se zemí se zkratuje. "
+                        f"Drát {i + 1}: leží přesně na zemi — se zemí se zkratuje. "
                         f"Zvedni ho aspoň pár mm."
                     )
         if not self.sources:
             msgs.append("Model nemá žádný zdroj.")
-        return msgs
+        return collapse_messages(msgs)
 
     # ------------------------------------------------------------- (de)ser.
     def to_dict(self) -> dict:
