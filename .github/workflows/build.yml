@@ -1,0 +1,106 @@
+# Sestaví AntOpt pro Windows i macOS bez toho, aby člověk oba systémy vlastnil.
+#
+# Spustí se ručně (Actions → Sestavení aplikací → Run workflow) nebo
+# automaticky při označení verze značkou v*, kdy z výsledků rovnou vznikne
+# vydání (Release) ke stažení.
+name: Sestavení aplikací
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  windows:
+    name: Windows — exe + MSI
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"      # z python.org, Tkinter má v sobě
+
+      - name: Knihovny
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pillow
+
+      - name: Ikona
+        run: python build/make_icon.py
+
+      - name: Aplikace
+        run: pyinstaller build/antopt.spec --noconfirm --distpath dist --workpath build/work
+
+      - name: Kontrola sestavené aplikace
+        run: dist\AntOpt\AntOpt.exe --selftest
+
+      - name: Instalátor MSI
+        shell: cmd
+        run: |
+          set PATH=%PATH%;C:\Program Files (x86)\WiX Toolset v3.14\bin
+          copy /y build\icon.ico build\windows\icon.ico
+          heat.exe dir dist\AntOpt -cg AppFiles -dr INSTALLDIR -gg -g1 -sfrag -srd -sreg -var var.SourceDir -out build\windows\files.wxs
+          candle.exe -nologo -dSourceDir=dist\AntOpt -out build\windows\obj\ build\windows\antopt.wxs build\windows\files.wxs
+          light.exe -nologo -b dist\AntOpt -sice:ICE60 -out dist\AntOpt-1.0.msi build\windows\obj\antopt.wixobj build\windows\obj\files.wixobj
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AntOpt-windows
+          path: dist/AntOpt-1.0.msi
+
+  macos:
+    name: macOS — app + DMG
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Knihovny
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pillow
+
+      - name: Ikona
+        run: python build/make_icon.py
+
+      - name: Aplikace
+        run: pyinstaller build/antopt.spec --noconfirm --distpath dist --workpath build/work
+
+      - name: Kontrola sestavené aplikace
+        run: dist/AntOpt.app/Contents/MacOS/AntOpt --selftest
+
+      - name: Instalační obraz DMG
+        run: |
+          STAGE="$(mktemp -d)/AntOpt"
+          mkdir -p "$STAGE"
+          cp -R dist/AntOpt.app "$STAGE/"
+          ln -s /Applications "$STAGE/Aplikace"
+          hdiutil create -volname AntOpt -srcfolder "$STAGE" -ov -format UDZO -quiet dist/AntOpt-1.0.dmg
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AntOpt-macos
+          path: dist/AntOpt-1.0.dmg
+
+  vydani:
+    name: Vydání
+    needs: [windows, macos]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: balicky
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: balicky/**/*
+          body: |
+            Aplikace nejsou podepsané vývojářským certifikátem.
+
+            macOS: po prvním stažení klepni na aplikaci pravým tlačítkem
+            a dej Otevřít. Windows: pod „Další informace“ v okně
+            SmartScreenu je tlačítko Přesto spustit.

@@ -116,6 +116,22 @@ Definice instalátoru je `build/windows/antopt.wxs`. Ověřená: sestavená
 zkušebně přes `wixl` dala platný MSI se 733 soubory, oběma zástupci
 i ikonou.
 
+### Sestavení bez druhého počítače
+
+Aplikaci pro Windows nejde vyrobit na Macu a naopak — PyInstaller neumí
+křížový překlad, takže `.exe` i `.msi` musí vzniknout na Windows. Kdo oba
+systémy nemá, nechá to udělat GitHubu: `.github/workflows/build.yml` sestaví
+při označení verze značkou (nebo ručně přes Actions → Run workflow) obojí
+najednou.
+
+```bash
+git tag v1.0 && git push origin v1.0
+```
+
+Oba běhy si samy ověří sestavenou aplikaci přes `--selftest`; hotové
+`AntOpt-1.0.msi` a `AntOpt-1.0.dmg` se objeví jako vydání ke stažení.
+U veřejného repozitáře je to zdarma.
+
 ### Předání někomu dalšímu
 
 Aplikace ani instalátory nejsou podepsané vývojářským certifikátem. Na macOS
