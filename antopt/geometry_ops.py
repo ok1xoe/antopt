@@ -152,36 +152,132 @@ class TaperSection:
     radius: float        # poloměr trubky [m]
 
 
-def taper_element(model: Model, wire: int, sections: Sequence[TaperSection],
-                  seg_per_section: int = 0) -> List[int]:
-    """Nahradí jeden drát symetrickým zúženým prvkem (Edit → Taper Wire Set).
+def _balanced_counts(lengths: Sequence[float], target: float) -> List[int]:
+    """Počty segmentů sekcí tak, aby byly segmenty **všude stejně dlouhé**.
+
+    Na skoku průměru je sousedství dvou hodně různě dlouhých segmentů hlavní
+    zdroj chyby zúžených prvků, proto se cílová délka segmentu trochu
+    doladí, aby po zaokrouhlení vyšly délky co nejpodobnější.
+    """
+    lengths = [max(1e-9, float(x)) for x in lengths]
+    best, best_score = None, float("inf")
+    for f in np.linspace(0.70, 1.45, 76):
+        t = target * f
+        n = [max(1, int(round(L / t))) for L in lengths]
+        segs = [L / k for L, k in zip(lengths, n)]
+        spread = max(segs) / min(segs)
+        # drž se blízko požadované hustoty, ale hlavně srovnej délky segmentů
+        score = spread + 0.35 * abs(math.log(sum(segs) / len(segs) / target))
+        if score < best_score:
+            best, best_score = n, score
+    return best or [1] * len(lengths)
+
+
+def element_wires(model: Model, wire: int) -> List[int]:
+    """Indexy všech drátů prvku, ve kterém leží drát ``wire``.
+
+    U jednoduchého (nezúženého) prvku vrátí jen ``[wire]``, u teleskopického
+    všechny jeho sekce. Díky tomu jde se zúženým prvkem pracovat jako s celkem.
+    """
+    for el in find_elements(model):
+        if wire in el.wires:
+            return list(el.wires)
+    return [wire]
+
+
+def _group_axis(model: Model, idx: Sequence[int]) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Střed, jednotkový směr a celková délka skupiny kolineárních drátů."""
+    ref = max(idx, key=lambda i: model.wires[i].length)
+    w0 = model.wires[ref]
+    if w0.length <= 0:
+        raise ValueError("Prvek má nulovou délku.")
+    u = (w0.b - w0.a) / w0.length
+    pts = np.array([p for i in idx for p in (model.wires[i].a, model.wires[i].b)])
+    t = pts @ u
+    length = float(t.max() - t.min())
+    center = pts[int(np.argmin(t))] + u * (length / 2.0)
+    return center, u, length
+
+
+def element_sections(model: Model, idx: Sequence[int]) -> List["TaperSection"]:
+    """Načte sekce prvku od středu ven — protějšek :func:`taper_element`.
+
+    Slouží k tomu, aby se dal už poskládaný prvek znovu otevřít a upravit,
+    místo aby se musel stavět od nuly.
+    """
+    idx = list(idx)
+    if not idx:
+        return []
+    c, u, _ = _group_axis(model, idx)
+    out: List[Tuple[float, float, float]] = []
+    for i in idx:
+        w = model.wires[i]
+        t0 = float((w.a - c) @ u)
+        t1 = float((w.b - c) @ u)
+        lo, hi = (t0, t1) if t0 <= t1 else (t1, t0)
+        if hi <= 1e-9:                       # záporná polovina, zrcadli
+            lo, hi = -hi, -lo
+        elif lo < -1e-9:                     # sekce přes střed (nezúžený drát)
+            lo, hi = 0.0, max(hi, -lo)
+        out.append((lo, hi, w.radius))
+    out.sort(key=lambda r: r[0])
+    secs: List[TaperSection] = []
+    for lo, hi, r in out:
+        if secs and abs(lo - sum(s.length for s in secs)) > 1e-6:
+            continue                          # duplicitní (zrcadlová) sekce
+        L = hi - lo
+        if L > 1e-9:
+            secs.append(TaperSection(L, r))
+    return secs
+
+
+def taper_element(model: Model, wire, sections: Sequence[TaperSection],
+                  seg_per_section: int = 0,
+                  seg_per_wavelength: float = 45.0) -> List[int]:
+    """Poskládá prvek ze zadaných sekcí (Edit → Taper Wire Set).
+
+    ``wire`` je buď index jednoho drátu, nebo seznam indexů — celý už
+    poskládaný prvek. V druhém případě se prvek **přestaví**, takže se dá
+    teleskopický prvek kdykoli znovu upravit.
 
     Sekce se zadávají od středu ven; celková délka prvku je 2× jejich součet.
-    Vrací indexy nově vzniklých drátů.
+    Segmentace je v celém prvku stejně dlouhá, aby na skoku průměru
+    nevznikaly sousední segmenty radikálně různých délek — to je u zúžených
+    prvků hlavní zdroj chyby.
+
+    Vrací indexy nově vzniklých drátů; indexy ostatních drátů, zdrojů a
+    zátěží se korektně přečíslují.
     """
     if not sections:
         raise ValueError("Zadej aspoň jednu sekci.")
-    w = model.wires[wire]
-    c = w.center()
-    L = w.length
-    if L <= 0:
-        raise ValueError("Drát má nulovou délku.")
-    u = (w.b - w.a) / L
+    idx = sorted({int(wire)}) if isinstance(wire, (int, np.integer)) else sorted(set(int(i) for i in wire))
+    if not idx:
+        raise ValueError("Nevybrán žádný drát.")
+    for i in idx:
+        if not 0 <= i < len(model.wires):
+            raise ValueError(f"Drát {i + 1} neexistuje.")
+
+    c, u, _ = _group_axis(model, idx)
     lam = model.wavelength
 
     total = sum(s.length for s in sections)
     if total <= 0:
         raise ValueError("Součet délek sekcí musí být kladný.")
 
+    # cílová délka segmentu — společná pro celý prvek
+    seg_len = lam / max(1.0, seg_per_wavelength)
+    seg_len = min(seg_len, total)
+    counts = _balanced_counts([s.length for s in sections], seg_len)
+
     # nové dráty: nejdřív záporná polovina od středu ven, pak kladná
     new: List[Wire] = []
     spans: List[Tuple[float, float]] = []      # rozsah podél u, měřeno od středu
     for sign in (-1.0, +1.0):
         d = 0.0
-        for s in sections:
+        for j, s in enumerate(sections):
             t0, t1 = sign * d, sign * (d + s.length)
-            n = seg_per_section or max(2, int(round(20 * s.length / lam)) + 1)
-            n = max(2, min(n, 51))
+            n = int(seg_per_section) if seg_per_section else counts[j]
+            n = max(1, min(n, 100))
             a, b = c + u * t0, c + u * t1
             if sign < 0:
                 a, b = b, a                     # vždy od vnějšku ke středu / dál ven
@@ -190,9 +286,15 @@ def taper_element(model: Model, wire: int, sections: Sequence[TaperSection],
             spans.append((t0, t1))
             d += s.length
 
-    def remap_point(pos: float) -> Tuple[int, float]:
-        """Bod na původním drátu -> (index v `new`, relativní poloha)."""
-        t = (pos - 0.5) * L                     # vzdálenost od středu podél u
+    # --- původní poloha bodu na prvku -> nový drát a relativní poloha
+    t_range = {}
+    for i in idx:
+        w = model.wires[i]
+        t_range[i] = (float((w.a - c) @ u), float((w.b - c) @ u))
+
+    def remap_point(old_wire: int, pos: float) -> Tuple[int, float]:
+        ta, tb = t_range[old_wire]
+        t = ta + pos * (tb - ta)
         for k, (t0, t1) in enumerate(spans):
             lo, hi = min(t0, t1), max(t0, t1)
             if lo - 1e-9 <= t <= hi + 1e-9:
@@ -203,22 +305,36 @@ def taper_element(model: Model, wire: int, sections: Sequence[TaperSection],
         span = t1 - t0
         return k, 0.5 if span == 0 else float(np.clip((t - t0) / span, 0, 1))
 
-    shift = len(new) - 1
-    for s in model.sources:
-        if s.wire == wire:
-            k, p = remap_point(s.pos)
-            s.wire, s.pos = wire + k, p
-        elif s.wire > wire:
-            s.wire += shift
-    for ld in model.loads:
-        if ld.wire == wire:
-            k, p = remap_point(ld.pos)
-            ld.wire, ld.pos = wire + k, p
-        elif ld.wire > wire:
-            ld.wire += shift
+    # --- přestavba seznamu drátů s úplným přečíslováním
+    dead = set(idx)
+    first = idx[0]
+    out: List[Wire] = []
+    mapping: dict = {}
+    start = -1
+    for i in range(len(model.wires)):
+        if i == first:
+            start = len(out)
+            out.extend(new)
+        if i in dead:
+            continue
+        mapping[i] = len(out)
+        out.append(model.wires[i])
 
-    model.wires[wire:wire + 1] = new
-    return list(range(wire, wire + len(new)))
+    for s in model.sources:
+        if s.wire in dead:
+            k, p = remap_point(s.wire, s.pos)
+            s.wire, s.pos = start + k, p
+        else:
+            s.wire = mapping[s.wire]
+    for ld in model.loads:
+        if ld.wire in dead:
+            k, p = remap_point(ld.wire, ld.pos)
+            ld.wire, ld.pos = start + k, p
+        else:
+            ld.wire = mapping[ld.wire]
+
+    model.wires = out
+    return list(range(start, start + len(new)))
 
 
 def element_center_wire(model: Model, idx: Sequence[int]) -> Tuple[int, float]:
@@ -353,6 +469,45 @@ def set_element_length(model: Model, el: Element, new_length: float) -> None:
     for i in el.wires:
         w = model.wires[i]
         _set(w, c + (w.a - c) * f, c + (w.b - c) * f)
+
+
+def set_element_tip(model: Model, el: Element, tip_length: float) -> float:
+    """Vysune/zasune **koncovou** trubku prvku, ostatní sekce nechá být.
+
+    Tak se teleskopický prvek ladí i doopravdy — koncovou trubkou. Vrací
+    novou celkovou délku prvku.
+    """
+    tip_length = max(1e-4, float(tip_length))
+    c, u, _ = _group_axis(model, el.wires)
+    outer_pos, outer_neg, t_pos, t_neg = None, None, -1e30, 1e30
+    for i in el.wires:
+        w = model.wires[i]
+        ta, tb = float((w.a - c) @ u), float((w.b - c) @ u)
+        hi, lo = max(ta, tb), min(ta, tb)
+        if hi > t_pos:
+            t_pos, outer_pos = hi, i
+        if lo < t_neg:
+            t_neg, outer_neg = lo, i
+    for i, sign in ((outer_pos, +1.0), (outer_neg, -1.0)):
+        if i is None:
+            continue
+        w = model.wires[i]
+        ta, tb = float((w.a - c) @ u), float((w.b - c) @ u)
+        inner = min(abs(ta), abs(tb))          # konec blíž ke středu zůstává
+        outer = sign * (inner + tip_length)
+        if abs(ta) <= abs(tb):
+            _set(w, c + u * (sign * inner), c + u * outer)
+        else:
+            _set(w, c + u * outer, c + u * (sign * inner))
+    _, _, L = _group_axis(model, el.wires)
+    el.length = L
+    return L
+
+
+def element_tip_length(model: Model, el: Element) -> float:
+    """Délka koncové (nejzazší) sekce prvku."""
+    secs = element_sections(model, el.wires)
+    return secs[-1].length if secs else 0.0
 
 
 def set_element_position(model: Model, el: Element, axis: str, value: float) -> None:

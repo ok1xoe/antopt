@@ -196,9 +196,37 @@ class Model:
         takže při sudém počtu leží uzel přesně ve středu drátu a napájení
         uprostřed je symetrické. (NEC to má naopak — tam se budí střed
         segmentu, takže mu vyhovuje lichý počet; převod si hlídá sám.)
+
+        **Zúžené (teleskopické) prvky** se segmentují jako celek: všechny
+        sekce prvku dostanou stejně dlouhé segmenty. Kdyby se na každou
+        sekci pustilo ``min_seg`` zvlášť, měla by krátká koncová trubka
+        segmenty několikrát kratší než střed — a právě sousedství různě
+        dlouhých segmentů na skoku průměru dělá u zúžených prvků
+        nejvíc škody.
         """
+        from .geometry_ops import find_elements
+
         lam = self.wavelength
-        for w in self.wires:
+        target = lam / max(1.0, per_wavelength)
+        try:
+            elements = find_elements(self)
+        except Exception:
+            elements = []
+        grouped = set()
+        for el in elements:
+            if len(el.wires) < 2:
+                continue
+            grouped.update(el.wires)
+            # společná délka segmentu pro celý prvek
+            n_tot = max(min_seg, int(round(el.length / target)))
+            n_tot = min(max_seg, n_tot)
+            seg = el.length / max(1, n_tot)
+            for i in el.wires:
+                w = self.wires[i]
+                w.nseg = max(1, min(max_seg, int(round(w.length / seg))))
+        for i, w in enumerate(self.wires):
+            if i in grouped:
+                continue
             n = max(min_seg, int(round(per_wavelength * w.length / lam)))
             n = min(max_seg, n)
             if force_even and n % 2:

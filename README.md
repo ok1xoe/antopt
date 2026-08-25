@@ -99,9 +99,13 @@ NEC-2 jediné jádro, které má smysl a jde použít.
 * úpravy geometrie: posun, rotace, zrcadlení, změna měřítka
 * **přeladění celé antény na jiný kmitočet** jedním příkazem
 * **stoh / řada** až 64 kopií s volitelným fázováním
-* **zúžené (teleskopické) prvky** — prvek z několika trubek různého průměru
+* **zúžené (teleskopické) prvky** — prvek z několika trubek různého průměru;
+  pracuje se s ním **jako s jedním prvkem**: dá se kdykoli znovu otevřít
+  a přestavět, délka i rozteč se mění vcelku a segmenty jsou v celém prvku
+  stejně dlouhé
 * zadání drátu polárně (délka, azimut, zenit)
-* editor prvků — pracuje s celými prvky včetně zúžení
+* editor prvků — pracuje s celými prvky včetně zúžení, umí i vysunout
+  samotnou koncovou trubku (tak se prvek ladí doopravdy)
 
 **Model**
 
@@ -265,9 +269,23 @@ Tohle jsou skutečná omezení modelu, ne formality:
 * **Velmi tlusté dráty** (poloměr nad ~λ/200) — reaktance se začne rozcházet,
   odpor zůstává dobrý. Pro trubky 25 mm na 20 m je odchylka pod 1 Ω.
 * **Segment musí být delší než 4× poloměr drátu.** Program to hlídá a upozorní.
-* **Zúžený prvek je aproximace.** Skok průměru mezi sekcemi tenkodrátový model
-  neumí přesně — u velkých skoků čekej odchylku reaktance. Zisk a diagram jsou
-  spolehlivější než impedance.
+* **Zúžený prvek je aproximace, ale slušná.** Skok průměru neumí tenkodrátový
+  model přesně žádný program této třídy. Porovnání s publikovanými hodnotami
+  (W4RNL, „Tapering to Perfection“, dipóly 14 MHz — referencí je korigovaná
+  hodnota, která sedí s MININECem):
+
+  | případ | reference | vlastní jádro | NEC-2 nekorig. |
+  |---|---:|---:|---:|
+  | celistvý 1,0″ | 71,8 −0,6j | 71,6 −1,9j | 72,0 +0,4j |
+  | skok daleko od středu | 72,0 +0,4j | 71,5 −3,9j | 73,7 +6,5j |
+  | skok blízko středu | 71,8 −0,5j | 73,0 −2,3j | 72,6 +6,8j |
+
+  Vlastní jádro se mýlí spíš do kapacity, NEC-2 do indukce a o kus víc —
+  **u zúžených prvků je vlastní jádro bližší pravdě než NEC-2.** Přesnou
+  odpověď dá až Leesonova korekce (náhradní prvek), ta tu zatím není.
+* **Zúžení prvků anténu rozladí** — prvek z trubek 25/20/16 je elektricky
+  kratší než stejně dlouhý prvek z 16 mm. Po poskládání prvků se musí
+  optimalizace pustit znovu; není to chyba výpočtu.
 * **Činitel jakosti Q** je lokální derivace impedance. U antén záměrně
   zploštělých přes celé pásmo je nestabilní — program to pozná a místo jedné
   hodnoty ukáže rozsah. Skutečná šířka pásma se pozná jen z rozmítání.

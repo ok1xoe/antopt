@@ -262,21 +262,32 @@ class TaperDialog(tk.Toplevel):
 
     def __init__(self, parent, model: Model, wire: int):
         super().__init__(parent)
-        self.title(f"Zúžený prvek — drát {wire + 1}")
         self.transient(parent)
-        self.model, self.wire = model, wire
+        self.model = model
+        # pracuj vždy s CELÝM prvkem, ne s jedním drátem — jinak by se
+        # u už poskládaného prvku přestavěla jen jedna trubka
+        self.wire = go.element_wires(model, wire)
         self.ok = False
-        w = model.wires[wire]
-        half = w.length / 2.0
+        _, _, total = go._group_axis(model, self.wire)
+        half = total / 2.0
+        self.half_mm = half * 1000.0
+        n = len(self.wire)
+        self.title("Zúžený prvek — dráty "
+                   + ", ".join(str(i + 1) for i in self.wire[:6])
+                   + ("…" if n > 6 else ""))
 
         body = ttk.Frame(self, padding=PAD)
         body.pack(fill="both", expand=True)
+        existing = go.element_sections(model, self.wire)
+        note = ("Prvek je už poskládaný — sekce níž jsou jeho současné rozměry, "
+                "můžeš je rovnou přepsat.\n" if n > 1 else "")
         ttk.Label(body, wraplength=520, justify="left", foreground="#555",
-                  text=f"Prvek se poskládá symetricky ze sekcí zadaných od středu "
-                       f"ven. Součet délek musí dát polovinu prvku "
+                  text=f"{note}Prvek se poskládá symetricky ze sekcí zadaných od "
+                       f"středu ven. Součet délek musí dát polovinu prvku "
                        f"({half * 1000:.0f} mm), jinak se délka prvku změní.\n"
-                       f"Pozor: v tenkodrátovém modelu je skok průměru "
-                       f"aproximace — u velkých skoků čekej odchylku reaktance."
+                       f"Segmenty budou v celém prvku stejně dlouhé — právě "
+                       f"sousedství různě dlouhých segmentů na skoku průměru "
+                       f"dělá u zúžených prvků největší chybu."
                   ).pack(anchor="w", pady=(0, PAD))
 
         cols = ("len", "dia")
@@ -287,9 +298,13 @@ class TaperDialog(tk.Toplevel):
         self.tree.column("dia", width=120, anchor="e")
         self.tree.pack(fill="both", expand=True)
 
-        d0 = w.radius * 2000.0
-        for L, d in ((half * 0.45, d0 * 1.6), (half * 0.30, d0 * 1.25),
-                     (half * 0.25, d0)):
+        d0 = model.wires[self.wire[-1]].radius * 2000.0
+        if len(existing) > 1:
+            preset = [(s.length, s.radius * 2000.0) for s in existing]
+        else:
+            preset = [(half * 0.45, d0 * 1.6), (half * 0.30, d0 * 1.25),
+                      (half * 0.25, d0)]
+        for L, d in preset:
             self.tree.insert("", "end", values=(f"{L * 1000:.0f}", f"{d:.1f}"))
 
         ed = ttk.Frame(body)
@@ -326,7 +341,7 @@ class TaperDialog(tk.Toplevel):
     def _refresh(self):
         rows = self._rows()
         tot = sum(L for L, _ in rows)
-        half = self.model.wires[self.wire].length / 2.0 * 1000.0
+        half = self.half_mm
         self.lbl.configure(
             text=f"Součet {tot:.0f} mm  →  celková délka prvku {2 * tot / 1000:.4f} m "
                  f"(původní {2 * half / 1000:.4f} m)",
@@ -393,18 +408,23 @@ class ElementDialog(tk.Toplevel):
         ttk.Label(body, foreground="#555", wraplength=560, justify="left",
                   text="Prvek = skupina kolineárních propojených drátů. Změna "
                        "délky zachová poměry sekcí u zúžených prvků. Hodnoty "
-                       "se mění dvojklikem.").pack(anchor="w", pady=(0, PAD))
-        cols = ("n", "x", "y", "z", "len", "tap", "wires")
+                       "se mění dvojklikem; sloupec „hrot“ vysune jen koncovou "
+                       "trubku, jako se prvek ladí doopravdy.").pack(anchor="w",
+                                                                    pady=(0, PAD))
+        cols = ("n", "x", "y", "z", "len", "tip", "tap", "wires")
         self.tree = ttk.Treeview(body, columns=cols, show="headings", height=10)
-        for k, t, w_ in (("n", "#", 34), ("x", "X [m]", 90), ("y", "Y [m]", 90),
-                         ("z", "Z [m]", 90), ("len", "délka [m]", 100),
-                         ("tap", "průřez", 130), ("wires", "dráty", 110)):
+        for k, t, w_ in (("n", "#", 34), ("x", "X [m]", 88), ("y", "Y [m]", 88),
+                         ("z", "Z [m]", 88), ("len", "délka [m]", 96),
+                         ("tip", "hrot [m]", 88),
+                         ("tap", "průřez", 128), ("wires", "dráty", 110)):
             self.tree.heading(k, text=t)
             self.tree.column(k, width=w_, anchor="e" if k not in ("tap", "wires") else "w")
         self.tree.pack(fill="both", expand=True)
         self.tree.bind("<Double-1>", self._edit)
-        ttk.Button(body, text="Zavřít", command=self.destroy).pack(anchor="e",
-                                                                   pady=(PAD, 0))
+        btn = ttk.Frame(body)
+        btn.pack(fill="x", pady=(PAD, 0))
+        ttk.Button(btn, text="Zúžení prvku…", command=self._taper).pack(side="left")
+        ttk.Button(btn, text="Zavřít", command=self.destroy).pack(side="right")
         self.refresh()
         self.grab_set()
 
@@ -416,26 +436,47 @@ class ElementDialog(tk.Toplevel):
             self.tree.insert("", "end", values=(
                 k, f"{el.center[0]:.4f}", f"{el.center[1]:.4f}",
                 f"{el.center[2]:.4f}", f"{el.length:.4f}",
+                f"{go.element_tip_length(self.model, el):.4f}",
                 el.describe(self.model),
                 "+".join(str(i + 1) for i in el.wires)))
+
+    def _selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            return None
+        return self.els[self.tree.index(sel[0])]
+
+    def _taper(self):
+        el = self._selected()
+        if el is None:
+            messagebox.showinfo("Vyber prvek",
+                                "Nejdřív v tabulce vyber prvek.", parent=self)
+            return
+        if taper_dialog(self, self.model, el.wires[0]):
+            self.refresh()
+            self.on_change()
 
     def _edit(self, event):
         row = self.tree.identify_row(event.y)
         col = self.tree.identify_column(event.x)
-        if not row or col not in ("#2", "#3", "#4", "#5"):
+        if not row or col not in ("#2", "#3", "#4", "#5", "#6"):
             return
         i = self.tree.index(row)
         el = self.els[i]
         keymap = {"#2": ("x", "Poloha X [m]", el.center[0]),
                   "#3": ("y", "Poloha Y [m]", el.center[1]),
                   "#4": ("z", "Poloha Z [m]", el.center[2]),
-                  "#5": ("len", "Délka prvku [m]", el.length)}
+                  "#5": ("len", "Délka prvku [m]", el.length),
+                  "#6": ("tip", "Délka koncové trubky [m]",
+                         go.element_tip_length(self.model, el))}
         key, label, cur = keymap[col]
         v = ask_form(self, "Úprava prvku", [("v", label, "f", round(float(cur), 4))])
         if not v:
             return
         if key == "len":
             go.set_element_length(self.model, el, v["v"])
+        elif key == "tip":
+            go.set_element_tip(self.model, el, v["v"])
         else:
             go.set_element_position(self.model, el, key, v["v"])
         self.refresh()

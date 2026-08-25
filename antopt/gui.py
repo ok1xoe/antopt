@@ -1650,8 +1650,9 @@ class App(ttk.Frame):
         i = self.tbl_wires.selected_index()
         if i is None:
             messagebox.showinfo("Vyber drát",
-                                "Nejdřív v tabulce vyber drát, ze kterého má "
-                                "vzniknout zúžený prvek.")
+                                "Nejdřív v tabulce vyber drát prvku, který se má "
+                                "poskládat ze sekcí. Když je prvek už zúžený, "
+                                "stačí kterákoli jeho trubka — přestaví se celý.")
             return
         if dlg.taper_dialog(self.master, self.model, i):
             self._after_edit()

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field, asdict
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -26,6 +26,7 @@ PARAM_KINDS = {
     "polomer": "Poloměr vodiče [m]",
     "souradnice": "Jedna souřadnice jednoho konce [m]",
     "prvek_delka": "Délka celého prvku i se zúžením [m]",
+    "prvek_hrot": "Vysunutí koncové trubky prvku [m]",
     "prvek_x": "Poloha celého prvku podél X [m]",
     "prvek_y": "Poloha celého prvku podél Y [m]",
     "prvek_z": "Poloha celého prvku podél Z [m]",
@@ -127,6 +128,9 @@ def read_param(model: Model, p: Parameter) -> float:
             return 0.0
         if p.kind == "prvek_delka":
             return el.length
+        if p.kind == "prvek_hrot":
+            from .geometry_ops import element_tip_length
+            return element_tip_length(model, el)
         return float(el.center[{"prvek_x": 0, "prvek_y": 1, "prvek_z": 2}[p.kind]])
     w = model.wires[p.wires[0]]
     if p.kind == "azimut":
@@ -181,6 +185,9 @@ def apply_param(model: Model, p: Parameter, value: float) -> None:
             return
         if p.kind == "prvek_delka":
             set_element_length(model, el, max(1e-6, float(value)))
+        elif p.kind == "prvek_hrot":
+            from .geometry_ops import set_element_tip
+            set_element_tip(model, el, max(1e-4, float(value)))
         else:
             set_element_position(model, el,
                                  {"prvek_x": "x", "prvek_y": "y", "prvek_z": "z"}[p.kind],
@@ -512,14 +519,52 @@ def suggest_parameters(model: Model, span_pct: float = 12.0) -> List[Parameter]:
     Dráty, které se někde stýkají, dostanou délku s **pevným spojem**, aby
     optimalizace geometrii nerozpojila. Stejně dlouhá ramena vycházející
     ze stejného bodu se automaticky sváží, takže zůstanou symetrická.
+
+    **Zúžený (teleskopický) prvek se bere jako jeden celek.** Šestisekční
+    prvek Yagi tedy dostane jednu délku, ne šest — jinak by optimalizace
+    posouvala jednotlivé trubky nezávisle a prvek by se rozpadl.
     """
+    from .geometry_ops import find_elements
+
     out: List[Parameter] = []
     tol = max(1e-9, model.wavelength * 1e-6)
-    anchors: List[Optional[int]] = []
+    lam = model.wavelength
+
+    try:
+        elements = find_elements(model)
+    except Exception:
+        elements = []
+    composed = {}                      # index drátu -> prvek, pokud je složený
+    for el in elements:
+        if len(el.wires) >= 2:
+            for i in el.wires:
+                composed[i] = el
+
+    # --- složené prvky: jedna délka a jedna poloha na celý prvek
+    el_x: List[Tuple[float, int]] = []
+    seen = set()
+    for el in elements:
+        if len(el.wires) < 2 or el.wires[0] in seen:
+            continue
+        seen.update(el.wires)
+        L = el.length
+        n_sec = len(el.wires) // 2
+        out.append(Parameter("prvek_delka", list(el.wires),
+                             L * (1 - span_pct / 100), L * (1 + span_pct / 100),
+                             label=f"Délka prvku na x={el.position_x:+.3f} m"
+                                   f" ({n_sec} sekce)"))
+        el_x.append((el.position_x, len(out) - 1))
+
+    # --- jednotlivé dráty (nezúžené prvky)
+    anchors: List[Optional[int]] = [None] * len(model.wires)
+    idx_of_wire: dict = {}
     for i, w in enumerate(model.wires):
+        if i in composed:
+            continue
         L = w.length
         anc = _shared_endpoint(model, i, tol)
-        anchors.append(anc)
+        anchors[i] = anc
+        idx_of_wire[i] = len(out)
         if anc is None:
             out.append(Parameter("delka", [i], L * (1 - span_pct / 100),
                                  L * (1 + span_pct / 100),
@@ -530,33 +575,41 @@ def suggest_parameters(model: Model, span_pct: float = 12.0) -> List[Parameter]:
                                  label=f"Délka drátu {i + 1} (spoj drží)"))
 
     # svázat stejně dlouhá ramena vycházející ze společného bodu
-    for i in range(len(model.wires)):
-        if anchors[i] is None or out[i].link is not None:
+    for i in idx_of_wire:
+        pi_idx = idx_of_wire[i]
+        if anchors[i] is None or out[pi_idx].link is not None:
             continue
         pi = model.wires[i].a if anchors[i] == 0 else model.wires[i].b
-        for j in range(i + 1, len(model.wires)):
-            if anchors[j] is None or out[j].link is not None:
+        for j in idx_of_wire:
+            if j <= i:
+                continue
+            pj_idx = idx_of_wire[j]
+            if anchors[j] is None or out[pj_idx].link is not None:
                 continue
             pj = model.wires[j].a if anchors[j] == 0 else model.wires[j].b
             if (np.linalg.norm(pi - pj) < tol
                     and abs(model.wires[i].length - model.wires[j].length) < tol * 1e3):
-                out[j].link = i
-                out[j].label = f"Délka drátu {j + 1} (= drát {i + 1})"
-    xs = np.array([float(w.center()[0]) for w in model.wires])
-    if len(np.unique(np.round(xs, 6))) > 1:
-        lam = model.wavelength
-        order = np.argsort(xs)
-        for rank, i in enumerate(order):
-            x = xs[i]
+                out[pj_idx].link = pi_idx
+                out[pj_idx].label = f"Délka drátu {j + 1} (= drát {i + 1})"
+
+    # --- rozteče podél ráhna
+    spots: List[Tuple[float, str, List[int]]] = [
+        (x, "prvek_x", list(out[k].wires)) for x, k in el_x]
+    spots += [(float(model.wires[i].center()[0]), "posun_x", [i])
+              for i in idx_of_wire]
+    if len({round(x, 6) for x, _, _ in spots}) > 1:
+        spots.sort(key=lambda s: s[0])
+        xs = [s[0] for s in spots]
+        for rank, (x, kind, wires) in enumerate(spots):
             if abs(x) < 1e-9:
                 continue                      # zářič drží počátek
-            # nesmí přeskočit sousední prvek
             gaps = []
             if rank > 0:
-                gaps.append(abs(x - xs[order[rank - 1]]))
-            if rank < len(order) - 1:
-                gaps.append(abs(xs[order[rank + 1]] - x))
+                gaps.append(abs(x - xs[rank - 1]))
+            if rank < len(xs) - 1:
+                gaps.append(abs(xs[rank + 1] - x))
             span = min(0.06 * lam, 0.45 * min(gaps)) if gaps else 0.06 * lam
-            out.append(Parameter("posun_x", [int(i)], x - span, x + span,
-                                 label=f"Poloha X drátu {i + 1}"))
+            name = (f"Poloha X prvku na x={x:+.3f} m" if kind == "prvek_x"
+                    else f"Poloha X drátu {wires[0] + 1}")
+            out.append(Parameter(kind, wires, x - span, x + span, label=name))
     return out
