@@ -99,7 +99,64 @@ def _deps_help(missing) -> str:
     ])
 
 
+def _selftest() -> int:
+    """Rychlá kontrola, že sbalená aplikace má všechno, co potřebuje.
+
+    Spouští se s přepínačem --selftest. Užitečné hlavně u sestavené
+    aplikace: import scipy.optimize a matplotlibu se děje až za běhu,
+    takže by chybějící kus jinak vyplaval až uprostřed optimalizace.
+    """
+    import traceback
+    kroky = []
+
+    def zkus(nazev, fn):
+        try:
+            fn()
+            kroky.append((nazev, None))
+        except Exception:
+            kroky.append((nazev, traceback.format_exc(limit=2)))
+
+    zkus("numpy", lambda: __import__("numpy"))
+    zkus("scipy.optimize", lambda: __import__("scipy.optimize", fromlist=["minimize"]))
+    zkus("matplotlib + Tk", lambda: __import__(
+        "matplotlib.backends.backend_tkagg", fromlist=["FigureCanvasTkAgg"]))
+    zkus("PIL.ImageTk", lambda: __import__("PIL.ImageTk", fromlist=["PhotoImage"]))
+    zkus("tkinter", lambda: __import__("tkinter"))
+
+    def vypocet():
+        from antopt import examples, analysis
+        m = examples.yagi3_20m()
+        m.auto_segment(per_wavelength=20.0)
+        r = analysis.analyse(m)
+        assert 5.0 < r.gain_dbi < 20.0, r.gain_dbi
+
+    def optimalizace():
+        from antopt import examples
+        from antopt.optimize import Objective, optimize, suggest_parameters
+        m = examples.yagi3_20m()
+        m.auto_segment(per_wavelength=20.0)
+        optimize(m, suggest_parameters(m)[:2], Objective(),
+                 pop_size=4, generations=1, polish=True)
+
+    zkus("výpočet modelu", vypocet)
+    zkus("optimalizace včetně doladění", optimalizace)
+
+    print("AntOpt — kontrola sestavené aplikace")
+    print("=" * 52)
+    spatne = 0
+    for nazev, chyba in kroky:
+        print(f"  {'OK  ' if chyba is None else 'CHYBA'}  {nazev}")
+        if chyba:
+            spatne += 1
+            print("        " + chyba.strip().replace("\n", "\n        "))
+    print("=" * 52)
+    print("Vše v pořádku." if not spatne else f"Chyb: {spatne}")
+    return 1 if spatne else 0
+
+
 def main() -> int:
+    if "--selftest" in sys.argv:
+        return _selftest()
     missing = []
     for mod in ("numpy", "scipy", "matplotlib"):
         try:

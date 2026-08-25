@@ -56,6 +56,59 @@ sudo dnf install python3-tkinter   # Fedora
 
 ---
 
+## Spustitelná aplikace
+
+Aby se dal program spouštět poklepáním a bez instalovaného Pythonu, sbalí se
+PyInstallerem do jednoho balíku. **Sestavuje se vždy na tom systému, pro který
+má výsledek být** — PyInstaller neumí křížový překlad a na Macu vznikne
+aplikace jen pro ten procesor, na kterém se sestavila (Apple Silicon, nebo
+Intel).
+
+**macOS** — ve Finderu poklepat na `build/build_macos.command`.
+(Kdyby se místo spuštění otevřel v editoru: `chmod +x build/build_macos.command`.)
+
+**Windows** — poklepat na `build\build_windows.bat`.
+
+**Linux** — `./build/build_linux.sh`
+
+Skript si sám vytvoří oddělené prostředí, doinstaluje PyInstaller a Pillow,
+vykreslí ikonu, sestaví aplikaci a nakonec ji **spustí na kontrolu**. Trvá to
+minutu až dvě, výsledek je v `dist/`:
+
+| systém | výsledek | velikost |
+|---|---|---|
+| macOS | `dist/AntOpt.app` | ~200 MB |
+| Windows | `dist/AntOpt/AntOpt.exe` | ~200 MB |
+| Linux | `dist/AntOpt/AntOpt` | ~200 MB |
+
+Velikost je daná numpy, scipy a matplotlibem uvnitř. Na Windows a Linuxu se
+musí přenášet **celá složka** `dist/AntOpt`, ne jen spustitelný soubor;
+`AntOpt.app` na macOS je balík a přenáší se celý sám.
+
+### Kontrola sestavené aplikace
+
+```bash
+dist/AntOpt.app/Contents/MacOS/AntOpt --selftest     # macOS
+dist\AntOpt\AntOpt.exe --selftest                    # Windows
+```
+
+Ověří import scipy.optimize, matplotlibu s Tk a PIL.ImageTk, spočítá zkušební
+model a proběhne krátkou optimalizaci včetně doladění. Tyhle věci se importují
+až za běhu, takže bez téhle kontroly by chybějící kus vyplaval třeba až
+uprostřed dlouhé optimalizace.
+
+### Předání někomu dalšímu
+
+Aplikace není podepsaná vývojářským certifikátem, takže ji macOS na cizím
+počítači napoprvé nepustí. Řešení je klepnout na ni pravým tlačítkem a dát
+**Otevřít**, případně:
+
+```bash
+xattr -dr com.apple.quarantine /cesta/AntOpt.app
+```
+
+---
+
 ## Výpočetní jádra
 
 Jádro se přepíná v záložce Výpočet a platí pro analýzu, rozmítání i optimalizaci.
