@@ -268,6 +268,7 @@ class Objective:
     target_x: float = 0.0
     fb_cap: float = 25.0        # nad tímhle F/B už se nevyplácí honit další dB
     fb_sector_deg: float = 0.0  # >0 = F/B v zadním výseku jako v MMANA
+    engine: Optional[str] = None  # None = výchozí jádro
     elevation_deg: Optional[float] = None    # None = maximum přes celý poloprostor
     n_th: int = 37
     n_ph: int = 73
@@ -296,20 +297,32 @@ def evaluate(model: Model, obj: Objective) -> Evaluation:
     cost = 0.0
     detail = []
     work = model.copy()
+    use_own = obj.engine in (None, "vlastní")
     for f in obj.freq_list(model):
         work.freq_mhz = f
+        sol = None
         try:
-            sol = solve(work)
+            if use_own:
+                sol = solve(work)
+                z = sol.zin
+            else:
+                from . import engines
+                res = engines.get(obj.engine).analyse(
+                    work, n_th=obj.n_th, n_ph=obj.n_ph, keep_solution=False,
+                    fb_sector_deg=obj.fb_sector_deg)
+                z = res.zin
         except Exception:
             return Evaluation(1e6, [])
-        z = sol.zin
         if not np.isfinite(z.real) or not np.isfinite(z.imag):
             return Evaluation(1e6, [])
         s = swr_from_z(z, work.z0)
         need_pattern = (obj.w_gain != 0 or obj.w_fb != 0 or obj.w_fs != 0
                         or obj.w_elev != 0)
         elev = float("nan")
-        if need_pattern:
+        if not use_own:
+            gain, fb, fs = res.gain_dbi, res.fb_db, res.fs_db
+            elev = res.elevation_deg
+        elif need_pattern:
             p = performance(sol, n_th=obj.n_th, n_ph=obj.n_ph,
                             fb_sector_deg=obj.fb_sector_deg)
             gain, fb, fs = p.gain_dbi, p.fb_db, p.fs_db
@@ -324,7 +337,7 @@ def evaluate(model: Model, obj: Objective) -> Evaluation:
             gain = fb = fs = 0.0
 
         cur = float("nan")
-        if obj.w_current and obj.current_at:
+        if obj.w_current and obj.current_at and sol is not None:
             try:
                 from .mesh import node_for_position
                 wi, pos = obj.current_at

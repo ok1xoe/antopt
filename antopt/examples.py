@@ -7,7 +7,7 @@ from .model import Model, Wire, Source, Load, Ground, C0
 def dipole_20m() -> Model:
     m = Model(name="Dipól 20 m ve výšce 12 m", freq_mhz=14.1, material="měď")
     L = 10.05
-    m.wires = [Wire(-L / 2, 0, 12.0, L / 2, 0, 12.0, radius=0.001, nseg=31)]
+    m.wires = [Wire(-L / 2, 0, 12.0, L / 2, 0, 12.0, radius=0.001, nseg=30)]
     m.sources = [Source(0, 0.5, 1.0)]
     m.ground = Ground.from_name("průměrná")
     return m
@@ -16,8 +16,8 @@ def dipole_20m() -> Model:
 def inverted_v_40m() -> Model:
     m = Model(name="Inverted V 40 m, vrchol 14 m", freq_mhz=7.05, material="měď")
     m.wires = [
-        Wire(0, 0, 14.0, 0, -9.6, 7.0, radius=0.00075, nseg=31),
-        Wire(0, 0, 14.0, 0, 9.6, 7.0, radius=0.00075, nseg=31),
+        Wire(0, 0, 14.0, 0, -9.6, 7.0, radius=0.00075, nseg=30),
+        Wire(0, 0, 14.0, 0, 9.6, 7.0, radius=0.00075, nseg=30),
     ]
     m.sources = [Source(0, 0.0, 1.0)]
     m.ground = Ground.from_name("průměrná")
@@ -29,9 +29,9 @@ def yagi3_20m() -> Model:
               material="hliník")
     a = 0.0125
     m.wires = [
-        Wire(-1.60, -5.30, 12.0, -1.60, 5.30, 12.0, radius=a, nseg=21),   # reflektor
-        Wire(0.00, -5.05, 12.0, 0.00, 5.05, 12.0, radius=a, nseg=21),    # zářič
-        Wire(2.20, -4.80, 12.0, 2.20, 4.80, 12.0, radius=a, nseg=21),    # direktor
+        Wire(-1.60, -5.30, 12.0, -1.60, 5.30, 12.0, radius=a, nseg=20),   # reflektor
+        Wire(0.00, -5.05, 12.0, 0.00, 5.05, 12.0, radius=a, nseg=20),    # zářič
+        Wire(2.20, -4.80, 12.0, 2.20, 4.80, 12.0, radius=a, nseg=20),    # direktor
     ]
     m.sources = [Source(1, 0.5, 1.0)]
     m.ground = Ground.from_name("průměrná")
@@ -43,7 +43,7 @@ def yagi5_2m() -> Model:
     a = 0.004
     els = [(-0.30, 1.030), (0.0, 0.980), (0.28, 0.940),
            (0.72, 0.928), (1.24, 0.918)]
-    m.wires = [Wire(x, -L / 2, 5.0, x, L / 2, 5.0, radius=a, nseg=15)
+    m.wires = [Wire(x, -L / 2, 5.0, x, L / 2, 5.0, radius=a, nseg=16)
                for x, L in els]
     m.sources = [Source(1, 0.5, 1.0)]
     m.ground = Ground("free")
@@ -53,7 +53,7 @@ def yagi5_2m() -> Model:
 def vertical_40m() -> Model:
     m = Model(name="Vertikál 1/4 vlny 40 m se zemním systémem", freq_mhz=7.1,
               material="hliník")
-    m.wires = [Wire(0, 0, 0.0, 0, 0, 10.2, radius=0.015, nseg=21)]
+    m.wires = [Wire(0, 0, 0.0, 0, 0, 10.2, radius=0.015, nseg=20)]
     m.sources = [Source(0, 0.0, 1.0)]
     m.ground = Ground.from_name("průměrná")
     m.ground_loss_r = 12.0
@@ -66,9 +66,9 @@ def loop_20m() -> Model:
     h = s * 0.866
     top = 12.0
     m.wires = [
-        Wire(0, -s / 2, top - h, 0, 0, top, radius=0.001, nseg=21),
-        Wire(0, 0, top, 0, s / 2, top - h, radius=0.001, nseg=21),
-        Wire(0, s / 2, top - h, 0, -s / 2, top - h, radius=0.001, nseg=21),
+        Wire(0, -s / 2, top - h, 0, 0, top, radius=0.001, nseg=20),
+        Wire(0, 0, top, 0, s / 2, top - h, radius=0.001, nseg=20),
+        Wire(0, s / 2, top - h, 0, -s / 2, top - h, radius=0.001, nseg=20),
     ]
     m.sources = [Source(2, 0.5, 1.0)]
     m.ground = Ground.from_name("průměrná")
@@ -90,7 +90,7 @@ def yagi6_10m() -> Model:
            (2.8957, 4.6600),        # D2
            (4.1061, 4.7819),        # D3
            (6.4500, 4.6667)]        # D4
-    m.wires = [Wire(x, -L / 2, 10.0, x, L / 2, 10.0, radius=a, nseg=17)
+    m.wires = [Wire(x, -L / 2, 10.0, x, L / 2, 10.0, radius=a, nseg=18)
                for x, L in els]
     m.sources = [Source(1, 0.5, 1.0)]
     m.ground = Ground.from_name("průměrná")

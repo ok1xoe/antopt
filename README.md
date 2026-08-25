@@ -1,8 +1,9 @@
 # AntOpt — modelování a optimalizace antén
 
 Desktopová aplikace pro modelování drátových antén metodou momentů a pro
-automatickou optimalizaci geometrie. Obdoba MMANA-GAL, ale s vlastním
-solverem napsaným od nuly a s otevřeným zdrojovým kódem.
+automatickou optimalizaci geometrie. Obdoba MMANA-GAL, s otevřeným zdrojovým
+kódem a **dvěma zaměnitelnými výpočetními jádry**: vlastním solverem napsaným
+od nuly a původním **NEC-2**.
 
 ---
 
@@ -52,6 +53,40 @@ přesný příkaz.
 sudo apt install python3-tk        # Debian/Ubuntu
 sudo dnf install python3-tkinter   # Fedora
 ```
+
+---
+
+## Výpočetní jádra
+
+Jádro se přepíná v záložce Výpočet a platí pro analýzu, rozmítání i optimalizaci.
+
+| | vlastní | NEC-2 |
+|---|---|---|
+| závislosti | žádné | `pip install PyNEC` |
+| rychlost analýzy | ~0,2 s | ~0,3 s |
+| volný prostor | ✅ shoda do 0,2 % | ✅ |
+| dokonalá zem | ✅ shoda do 1 % | ✅ |
+| **reálná zem — impedance** | aproximace (obraz nad dokonalou zemí) | **Sommerfeldova zem** |
+| dráty blízko země | odchylka roste | spolehlivé |
+| licence | součást projektu | GPL (načítá se volitelně) |
+
+Pravidlo: **volný prostor a dokonalá zem — obě jádra dají totéž**, ber to
+rychlejší. **Reálná zem a cokoliv blízko země — ber NEC-2.**
+
+Kde ani jedno jádro nestačí: **vertikál napájený přímo ze země nad reálnou
+zemí.** Vlastní jádro ho počítá jako nad dokonalou zemí (ignoruje ztráty),
+NEC-2 dá u drátu dotýkajícího se země s reálnou zemí nesmysl (200 Ω místo
+36 Ω) — to je známé omezení NEC-2, na které je potřeba NEC-4. Buď zvedni
+základnu a dej radiály, nebo počítej s dokonalou zemí a ztráty zemního
+systému zadej ručně.
+
+### Proč zrovna NEC-2 a ne 4nec2 nebo EZNEC
+
+**4nec2 a EZNEC nejsou solvery, ale uzavřená okna nad NEC-2** (EZNEC Pro nad
+NEC-4, který je licencovaný a exportně omezený) — knihovna, na kterou by
+šlo linkovat, neexistuje. **MININEC 3** je veřejný, ale je to starší a méně
+přesný předchůdce NEC-2, ze kterého vychází právě MMANA. Z těch možností je
+NEC-2 jediné jádro, které má smysl a jde použít.
 
 ---
 
@@ -170,6 +205,8 @@ pip install pytest PyNEC     # PyNEC je volitelný, bez něj se NEC testy přesk
 python3 -m pytest tests/ -q
 ```
 
+Se stejným `pip install PyNEC` se v aplikaci zpřístupní i **jádro NEC-2**.
+
 ---
 
 ## Shoda s MMANA-GAL
@@ -209,7 +246,7 @@ Co z MMANA je hotové a co ne — bez přikrášlování:
 | **Log optimalizace se 128 kroky a ručním výběrem** | ❌ |
 | **Překryv diagramů více antén** (.mab porovnání) | ❌ historie je jen tabulka |
 | **Tisk** | ❌ jen uložení obrázku |
-| Sommerfeldova zem (MMANA ji taky nemá) | ❌ |
+| Sommerfeldova zem (MMANA ji taky nemá) | ✅ s jádrem NEC-2 |
 
 ---
 
@@ -217,12 +254,13 @@ Co z MMANA je hotové a co ne — bez přikrášlování:
 
 Tohle jsou skutečná omezení modelu, ne formality:
 
-* **Reálná zem v impedanci je jen přibližná.** Matice se počítá s obrazem nad
-  dokonalou zemí (stejně jako MININEC, ze kterého vychází i MMANA); Fresnelovy
-  koeficienty se uplatní až ve vyzařování. U vodorovných antén nad zemí to
-  na zisk sedí do ~0,2 dB, na impedanci je odchylka jednotky ohmů. **U vertikálu
-  napájeného proti zemi je impedance nepoužitelná** — zadej ztráty zemního
-  systému ručně (pole „Ztráty zemn. systému“) nebo model ověř jinde.
+* **Reálná zem v impedanci je u vlastního jádra jen přibližná.** Matice se
+  počítá s obrazem nad dokonalou zemí (stejně jako MININEC, ze kterého vychází
+  i MMANA); Fresnelovy koeficienty se uplatní až ve vyzařování. U vodorovných
+  antén nad zemí to na zisk sedí do ~0,2 dB, na impedanci je odchylka jednotky
+  ohmů. **Přepni na jádro NEC-2** — má Sommerfeldovu zem a tenhle problém nemá.
+* **Vertikál napájený přímo ze země nad reálnou zemí neumí ani jedno jádro** —
+  viz tabulka jader výše.
 * **Zakopané radiály neumí** nikdo z této třídy programů, tenhle taky ne.
 * **Velmi tlusté dráty** (poloměr nad ~λ/200) — reaktance se začne rozcházet,
   odpor zůstává dobrý. Pro trubky 25 mm na 20 m je odchylka pod 1 Ω.
@@ -251,6 +289,7 @@ antopt/
   wizards.py    průvodci tvorbou antén
   match.py      návrh vlásenky (hairpin), ladění zářiče
   hfcalc.py     rezonance, cívky, LC článek, pahýly, vedení, napáječe
+  engines.py    výměnná jádra (vlastní MoM / NEC-2 přes PyNEC)
   fileio.py     import/export NEC a MMANA
   examples.py   vestavěné příklady
   dialogs.py    dialogy GUI

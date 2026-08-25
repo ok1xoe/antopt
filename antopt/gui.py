@@ -31,6 +31,7 @@ from . import dialogs as dlg
 from . import geometry_ops as go
 from . import wizards as wz
 from .analysis import find_resonance, q_factor, q_estimate
+from . import engines
 
 PAD = 6
 
@@ -451,6 +452,13 @@ class App(ttk.Frame):
                    command=self.sweep_around).pack(side="left")
         ttk.Button(top, text="Rezonance", command=self.do_resonance).pack(side="left", padx=4)
         ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
+        ttk.Label(top, text="Jádro:").pack(side="left")
+        self.var_engine = tk.StringVar(value=engines.default_name())
+        cb_eng = ttk.Combobox(top, textvariable=self.var_engine, width=9,
+                              state="readonly", values=engines.available_engines())
+        cb_eng.pack(side="left", padx=3)
+        cb_eng.bind("<<ComboboxSelected>>", lambda e: self._engine_changed())
+        ttk.Separator(top, orient="vertical").pack(side="left", fill="y", padx=10)
         ttk.Label(top, text="F/B výsek [°]:").pack(side="left")
         self.var_fbsec = tk.StringVar(value="0")
         ttk.Combobox(top, textvariable=self.var_fbsec, width=5, state="readonly",
@@ -837,23 +845,25 @@ class App(ttk.Frame):
         m = self.model
         sel = self.tbl_wires.selected_index()
 
-        mags = None
-        if (self.var_show_current.get() and self.result is not None
-                and self.result.solution is not None
-                and len(self.result.solution.mesh.seg_nodes) > 0):
-            sol = self.result.solution
-            if len(sol.mesh.seg_wire) and max(sol.mesh.seg_wire) == len(m.wires) - 1:
-                mags = np.abs(sol.seg_alpha + 0.5 * sol.seg_beta)
-                mmax = mags.max() if mags.size else 1.0
-                mags = mags / (mmax if mmax > 0 else 1.0)
+        geo = None
+        if self.var_show_current.get() and self.result is not None:
+            try:
+                geo = engines.get(self.result.engine).geometry(self.result)
+            except Exception:
+                geo = None
+            if geo is not None and geo.magnitude.size:
+                mx = float(np.max(geo.magnitude))
+                geo = type(geo)(geo.a, geo.b,
+                                geo.magnitude / (mx if mx > 0 else 1.0))
+            else:
+                geo = None
 
-        if mags is not None:
-            sol = self.result.solution
+        if geo is not None:
             cmap = matplotlib.colormaps["viridis"]
-            for si in range(sol.mesh.nseg):
-                a, b = sol.mesh.a[si], sol.mesh.b[si]
+            for si in range(len(geo.a)):
+                a, b = geo.a[si], geo.b[si]
                 ax.plot([a[0], b[0]], [a[1], b[1]], [a[2], b[2]],
-                        color=cmap(float(mags[si])), linewidth=2.4)
+                        color=cmap(float(geo.magnitude[si])), linewidth=2.4)
         else:
             for i, w in enumerate(m.wires):
                 col = "#d32f2f" if i == sel else "#1565c0"
@@ -887,7 +897,7 @@ class App(ttk.Frame):
         ax.set_xlabel("X [m]")
         ax.set_ylabel("Y [m]")
         ax.set_zlabel("Z [m]")
-        ax.set_title("Geometrie" + ("  (barva = proud)" if mags is not None else ""))
+        ax.set_title("Geometrie" + ("  (barva = proud)" if geo is not None else ""))
         self.fig_geo.tight_layout()
         self.cv_geo.draw_idle()
 
@@ -911,10 +921,12 @@ class App(ttk.Frame):
         except (ValueError, AttributeError):
             sec = 0.0
 
+        eng = self.engine_name()
+
         def job(cancel, progress):
-            r = analyse(model, fb_sector_deg=sec)
+            r = analyse(model, fb_sector_deg=sec, engine=eng)
             try:
-                r_q = q_estimate(model)
+                r_q = q_estimate(model, engine=eng)
             except Exception:
                 r_q = (float("nan"), False, float("nan"), float("nan"))
             return r, r_q
@@ -940,6 +952,7 @@ class App(ttk.Frame):
         z = r.zin
         g = abs((z - m.z0) / (z + m.z0))
         lines = [
+            f"Jádro           {r.engine}",
             f"Kmitočet        {r.freq_mhz:.4f} MHz",
             f"Vlnová délka    {m.wavelength:.3f} m",
             "",
@@ -984,11 +997,13 @@ class App(ttk.Frame):
         model = self.model.copy()
         full = self.var_full_sweep.get()
 
+        eng = self.engine_name()
+
         def job(cancel, progress):
             def cb(i, total):
                 progress(f"Rozmítání {i}/{total}")
                 return not cancel.is_set()
-            return sweep(model, f1, f2, n, full=full, progress=cb)
+            return sweep(model, f1, f2, n, full=full, progress=cb, engine=eng)
 
         def done(res):
             self.sweep_results = res
@@ -1148,10 +1163,9 @@ class App(ttk.Frame):
 
     # -------------------------------------------------------------- diagramy
     def draw_pattern(self):
-        if self.result is None or self.result.solution is None:
+        if self.result is None:
             return
-        from .farfield import cut_azimuth, cut_vertical
-        sol = self.result.solution
+        eng = engines.get(self.result.engine)
         try:
             rng = float(self.var_range.get().replace(",", "."))
         except ValueError:
@@ -1186,14 +1200,14 @@ class App(ttk.Frame):
         self.fig_pat.clear()
         self._cursor_art = []
 
-        ang_h, pat_h = cut_azimuth(sol, el, 361)
+        ang_h, pat_h = eng.cut_azimuth(self.result, el, 361)
         ax1 = self.fig_pat.add_subplot(121, projection="polar")
         self._polar_mmana(
             ax1, ang_h, pat_h, comps, gmax, rng, kind="azimut",
             title=f"Vodorovný diagram — elevace {el:.1f}°",
             mark_angle=self.result.azimuth_deg)
 
-        ang_v, pat_v = cut_vertical(sol, az, 361)
+        ang_v, pat_v = eng.cut_vertical(self.result, az, 361)
         ax2 = self.fig_pat.add_subplot(122, projection="polar")
         self._polar_mmana(
             ax2, ang_v, pat_v, comps, gmax, rng,
@@ -1206,7 +1220,7 @@ class App(ttk.Frame):
                 f"F/S {self.result.fs_db:.1f} dB   "
                 f"úhel vyzařování {self.result.elevation_deg:.1f}°   "
                 f"svazek {self.result.beam_h_deg:.0f}°/{self.result.beam_v_deg:.0f}°   "
-                f"{self.result.freq_mhz:.4f} MHz")
+                f"{self.result.freq_mhz:.4f} MHz   [{self.result.engine}]")
         self.fig_pat.text(0.5, 0.012, info, ha="center", fontsize=9, color="#333")
         bottom = 0.075
         if len(comps) > 1:
@@ -1445,6 +1459,7 @@ class App(ttk.Frame):
         except (ValueError, AttributeError):
             sec = 0.0
         return Objective(freqs_mhz=freqs, fb_sector_deg=sec,
+                         engine=self.engine_name(),
                          w_gain=num("w_gain", 1.0),
                          w_fb=num("w_fb", 0.5), w_swr=num("w_swr", 2.0),
                          target_swr=num("target_swr", 1.5),
@@ -1518,6 +1533,23 @@ class App(ttk.Frame):
         self.nb.select(0)
         self.set_status("Optimalizovaná geometrie převzata do modelu.")
 
+
+    # ==================================================================
+    #  výpočetní jádro
+    # ==================================================================
+    def engine_name(self) -> str:
+        return getattr(self, "var_engine", None).get() if hasattr(self, "var_engine") \
+            else engines.default_name()
+
+    def _engine_changed(self):
+        name = self.engine_name()
+        engines.set_default(name)
+        self.result = None
+        self.sweep_results = []
+        self.draw_geometry()
+        eng = engines.get(name)
+        self.set_status(f"Jádro: {name} — {eng.description}  "
+                        f"(přepočítej klávesou F5)")
 
     # ==================================================================
     #  průvodci a úpravy geometrie
@@ -1604,8 +1636,10 @@ class App(ttk.Frame):
         model = self.model.copy()
         self.set_status("Hledám rezonanci…")
 
+        eng = self.engine_name()
+
         def job(cancel, progress):
-            return find_resonance(model)
+            return find_resonance(model, engine=eng)
 
         def done(res):
             if res is None:
@@ -1663,10 +1697,10 @@ class App(ttk.Frame):
     #  3D diagram
     # ==================================================================
     def show_3d(self):
-        if self.result is None or self.result.solution is None:
+        if self.result is None:
             messagebox.showinfo("Nejdřív spočítej", "Spusť výpočet (F5).")
             return
-        sol = self.result.solution
+        eng3 = engines.get(self.result.engine)
         grounded = self.model.ground.kind != "free"
         win = tk.Toplevel(self.master)
         win.title("3D vyzařovací diagram")
@@ -1691,11 +1725,13 @@ class App(ttk.Frame):
             except ValueError:
                 rng = 30.0
             n_th = 46 if grounded else 73
-            th = np.radians(np.linspace(0.5, 89.5 if grounded else 179.5, n_th))
-            ph = np.radians(np.linspace(0, 360, 97))
-            TH, PH = np.meshgrid(th, ph, indexing="ij")
-            pat = far_field(sol, TH, PH)
-            g = pat.gain_dbi
+            th_deg = np.linspace(0.5, 89.5 if grounded else 179.5, n_th)
+            g = np.empty((n_th, 97))
+            for k, td in enumerate(th_deg):
+                _, row = eng3.cut_azimuth(self.result, 90.0 - td, 97)
+                g[k] = row.gain_dbi
+            TH = np.radians(th_deg)[:, None] * np.ones((1, 97))
+            PH = np.radians(np.linspace(0, 360, 97))[None, :] * np.ones((n_th, 1))
             gmax = float(np.max(g))
             r = np.clip(g - gmax + rng, 0, None) / rng
             X = r * np.sin(TH) * np.cos(PH)

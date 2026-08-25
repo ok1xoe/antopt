@@ -44,6 +44,7 @@ class Mesh:
     bs_coef: np.ndarray         # (Nb, 2) float (0 = nepoužito)
     bs_node: np.ndarray         # (Nb,) uzel, ke kterému báze patří
     node_of_wirepos: dict       # (wire, node_index_on_wire) -> global node id
+    node_degree: dict           # uzel -> počet připojených segmentů
 
     @property
     def nseg(self) -> int:
@@ -162,6 +163,7 @@ def build_mesh(model: Model) -> Mesh:
         bs_coef=np.array(bs_coef, dtype=float),
         bs_node=np.array(bs_node, dtype=int),
         node_of_wirepos=node_of_wirepos,
+        node_degree={n: len(v) for n, v in attach.items()},
     )
 
 
@@ -169,11 +171,27 @@ def node_for_position(mesh: Mesh, model: Model, wire: int, pos: float) -> int:
     """Najde uzel na drátu ``wire`` nejblíž relativní poloze ``pos`` (0..1).
 
     Preferuje uzly, ke kterým existuje bázová funkce (tj. ne volné konce).
+
+    Uzly, kde se potkávají **tři a víc** drátů, se pro napájení přeskakují.
+    V takovém uzlu není proud jednoznačný — dá se rozdělit mezi větve mnoha
+    způsoby — a delta-gap by tam budil jen jednu dvojici větví. Napájení se
+    proto posune o jeden uzel dovnitř zadaného drátu, což odpovídá tomu, jak
+    zdroj v mezeře segmentu chápe i NEC.
     """
     w = model.wires[wire]
     n = max(1, int(w.nseg))
     ideal = pos * n
-    order = sorted(range(n + 1), key=lambda i: abs(i - ideal))
+
+    def usable(node: int) -> bool:
+        return (mesh.basis_at_node(node) >= 0
+                and mesh.node_degree.get(node, 0) <= 2)
+
+    order = sorted(range(n + 1), key=lambda i: (abs(i - ideal), i))
+    for i in order:
+        node = mesh.node_of_wirepos[(wire, i)]
+        if usable(node):
+            return node
+    # nouzově ber i větvení, jen ať je na čem počítat
     for i in order:
         node = mesh.node_of_wirepos[(wire, i)]
         if mesh.basis_at_node(node) >= 0:

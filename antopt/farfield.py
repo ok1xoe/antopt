@@ -238,19 +238,8 @@ def performance(sol: Solution, n_th: int = 91, n_ph: int = 181,
 
 
 def _beamwidth(cut: np.ndarray, angles_deg: np.ndarray, gmax: float) -> float:
-    above = cut >= gmax - 3.0
-    if not np.any(above):
-        return float("nan")
-    idx = np.where(above)[0]
-    # spojitý úsek kolem maxima
-    imax = int(np.argmax(cut))
-    lo = imax
-    while lo - 1 >= 0 and above[lo - 1]:
-        lo -= 1
-    hi = imax
-    while hi + 1 < len(cut) and above[hi + 1]:
-        hi += 1
-    return float(abs(angles_deg[hi] - angles_deg[lo]))
+    from .gui_helpers import beamwidth_of
+    return beamwidth_of(cut, angles_deg, gmax)
 
 
 def cut_azimuth(sol: Solution, elevation_deg: float, n: int = 361):

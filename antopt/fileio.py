@@ -55,6 +55,23 @@ def _seg_index(model: Model, wire: int, pos: float) -> int:
     return max(1, min(n, int(round(pos * n + 0.5))))
 
 
+def _pos_from_seg(seg: int, n: int) -> float:
+    """Střed segmentu -> relativní poloha, se srovnáním na střed a konce drátu.
+
+    NEC budí střed segmentu, takže při sudém počtu segmentů neumí trefit
+    přesný střed drátu. Poloha do půl segmentu od středu (nebo od konce) se
+    proto zarovná — jinak by se napájecí bod při každém průchodu formátem
+    posouval.
+    """
+    n = max(1, int(n))
+    pos = (seg - 0.5) / n
+    tol = 0.5 / n + 1e-9
+    for anchor in (0.0, 0.5, 1.0):
+        if abs(pos - anchor) <= tol:
+            return anchor
+    return pos
+
+
 def from_nec(text: str) -> Tuple[Model, List[str]]:
     warn: List[str] = []
     m = Model(name="import NEC")
@@ -98,7 +115,7 @@ def from_nec(text: str) -> Tuple[Model, List[str]]:
                 vi = float(rest[5]) if len(rest) > 5 else 0.0
                 v = complex(vr, vi)
                 n = m.wires[wi].nseg if 0 <= wi < len(m.wires) else 1
-                m.sources.append(Source(wi, (seg - 0.5) / n, abs(v),
+                m.sources.append(Source(wi, _pos_from_seg(seg, n), abs(v),
                                         math.degrees(math.atan2(vi, vr))))
             elif tag == "LD":
                 t = int(float(rest[0]))
@@ -108,7 +125,7 @@ def from_nec(text: str) -> Tuple[Model, List[str]]:
                 wi = int(float(rest[1])) - 1
                 seg = int(float(rest[2]))
                 n = m.wires[wi].nseg if 0 <= wi < len(m.wires) else 1
-                pos = (seg - 0.5) / n
+                pos = _pos_from_seg(seg, n)
                 if t == 4:
                     m.loads.append(Load(wi, pos, "RX", float(rest[4]), float(rest[5])))
                 elif t == 0:

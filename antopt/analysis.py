@@ -28,10 +28,22 @@ class Result:
     efficiency: float
     solution: Optional[Solution] = None
     perf: Optional[Performance] = None
+    engine: str = "vlastní"
+    backend: Optional[dict] = None
 
 
 def analyse(model: Model, n_th: int = 91, n_ph: int = 181,
-            keep_solution: bool = True, fb_sector_deg: float = 0.0) -> Result:
+            keep_solution: bool = True, fb_sector_deg: float = 0.0,
+            engine: Optional[str] = None) -> Result:
+    """Spočítá model zvoleným jádrem (None = výchozí, viz ``engines``)."""
+    from . import engines
+    return engines.get(engine).analyse(model, n_th=n_th, n_ph=n_ph,
+                                       keep_solution=keep_solution,
+                                       fb_sector_deg=fb_sector_deg)
+
+
+def _analyse_own(model: Model, n_th: int = 91, n_ph: int = 181,
+                 keep_solution: bool = True, fb_sector_deg: float = 0.0) -> Result:
     sol = solve(model)
     p = performance(sol, n_th=n_th, n_ph=n_ph, fb_sector_deg=fb_sector_deg)
     return Result(
@@ -48,12 +60,13 @@ def analyse(model: Model, n_th: int = 91, n_ph: int = 181,
         efficiency=p.efficiency,
         solution=sol if keep_solution else None,
         perf=p if keep_solution else None,
+        engine="vlastní",
     )
 
 
 def sweep(model: Model, f_start: float, f_stop: float, n: int = 21,
-          full: bool = False, progress: Optional[Callable[[int, int], bool]] = None
-          ) -> List[Result]:
+          full: bool = False, progress: Optional[Callable[[int, int], bool]] = None,
+          engine: Optional[str] = None) -> List[Result]:
     """Rozmítání kmitočtu. ``full=True`` počítá i zisk a F/B (pomalejší).
 
     ``progress(i, n)`` může vrátit False pro přerušení.
@@ -64,7 +77,17 @@ def sweep(model: Model, f_start: float, f_stop: float, n: int = 21,
     for i, f in enumerate(freqs):
         work.freq_mhz = float(f)
         if full:
-            r = analyse(work, n_th=46, n_ph=91, keep_solution=False)
+            r = analyse(work, n_th=46, n_ph=91, keep_solution=False, engine=engine)
+        elif engine and engine != "vlastní":
+            from . import engines
+            rr = engines.get(engine).analyse(work, n_th=13, n_ph=25,
+                                             keep_solution=False)
+            r = Result(freq_mhz=float(f), zin=rr.zin, swr=rr.swr,
+                       gain_dbi=float("nan"), fb_db=float("nan"),
+                       fs_db=float("nan"), elevation_deg=float("nan"),
+                       azimuth_deg=float("nan"), beam_h_deg=float("nan"),
+                       beam_v_deg=float("nan"), efficiency=float("nan"),
+                       engine=engine)
         else:
             sol = solve(work)
             r = Result(freq_mhz=float(f), zin=sol.zin,
@@ -104,8 +127,17 @@ def bandwidth(results: Sequence[Result], swr_limit: float = 2.0):
     return f_lo, f_hi, (f_hi - f_lo) * 1000.0
 
 
+def _zin(model: Model, engine: Optional[str] = None) -> complex:
+    from . import engines
+    if engine and engine != "vlastní":
+        return engines.get(engine).analyse(model, n_th=7, n_ph=13,
+                                           keep_solution=False).zin
+    return solve(model).zin
+
+
 def find_resonance(model: Model, f_lo: Optional[float] = None,
-                   f_hi: Optional[float] = None, tol: float = 1e-5):
+                   f_hi: Optional[float] = None, tol: float = 1e-5,
+                   engine: Optional[str] = None):
     """Najde nejbližší kmitočet, kde je reaktance nulová (Plots → Resonance).
 
     Vrací (f [MHz], Z) nebo None, když v rozsahu rezonance není.
@@ -117,7 +149,7 @@ def find_resonance(model: Model, f_lo: Optional[float] = None,
 
     def x_at(f: float) -> float:
         work.freq_mhz = f
-        return solve(work).zin.imag
+        return _zin(work, engine).imag
 
     # hrubé prohledání od středu ven
     fs = np.concatenate([np.linspace(f0, f_hi, 60), np.linspace(f0, f_lo, 60)[1:]])
@@ -146,10 +178,11 @@ def find_resonance(model: Model, f_lo: Optional[float] = None,
             a, xa = m, xm
     fr = 0.5 * (a + b)
     work.freq_mhz = fr
-    return fr, solve(work).zin
+    return fr, _zin(work, engine)
 
 
-def q_factor(model: Model, delta_rel: float = 0.01) -> float:
+def q_factor(model: Model, delta_rel: float = 0.01,
+             engine: Optional[str] = None) -> float:
     """Činitel jakosti napájecího bodu podle Yaghjiana–Besta:
 
         Q = (ω₀ / 2R₀) · |dR/dω + j(dX/dω + |X₀|/ω₀)|
@@ -160,9 +193,9 @@ def q_factor(model: Model, delta_rel: float = 0.01) -> float:
     """
     work = model.copy()
     f0 = model.freq_mhz
-    work.freq_mhz = f0 * (1 - delta_rel); z1 = solve(work).zin
-    work.freq_mhz = f0 * (1 + delta_rel); z2 = solve(work).zin
-    work.freq_mhz = f0; z0 = solve(work).zin
+    work.freq_mhz = f0 * (1 - delta_rel); z1 = _zin(work, engine)
+    work.freq_mhz = f0 * (1 + delta_rel); z2 = _zin(work, engine)
+    work.freq_mhz = f0; z0 = _zin(work, engine)
     if z0.real <= 0:
         return float("nan")
     df = 2 * delta_rel * f0
@@ -172,7 +205,7 @@ def q_factor(model: Model, delta_rel: float = 0.01) -> float:
     return float(f0 / (2 * z0.real) * abs(zp))
 
 
-def q_estimate(model: Model):
+def q_estimate(model: Model, engine: Optional[str] = None):
     """Q se dvěma šířkami kroku. Vrací (Q, spolehlivé?, Q_min, Q_max).
 
     U antén záměrně zploštělých přes celé pásmo je lokální derivace impedance
@@ -182,7 +215,7 @@ def q_estimate(model: Model):
     qs = []
     for d in (0.005, 0.02):
         try:
-            qs.append(q_factor(model, d))
+            qs.append(q_factor(model, d, engine))
         except Exception:
             pass
     qs = [q for q in qs if np.isfinite(q)]

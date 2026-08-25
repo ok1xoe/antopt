@@ -185,18 +185,23 @@ class Model:
         p = np.array(pts)
         return p.min(axis=0), p.max(axis=0)
 
-    def auto_segment(self, per_wavelength: float = 45.0, min_seg: int = 5,
-                     max_seg: int = 151, force_odd: bool = True) -> None:
+    def auto_segment(self, per_wavelength: float = 45.0, min_seg: int = 6,
+                     max_seg: int = 150, force_even: bool = True) -> None:
         """Nastaví počet segmentů podle délky drátu vůči vlnové délce.
 
         45 segmentů na vlnovou délku je bezpečné minimum — s klasickým
         pravidlem 20/λ se u lomených antén rozchází reaktance o jednotky ohmů.
+
+        Sudý počet je pro vlastní jádro lepší: bázové funkce sedí na uzlech,
+        takže při sudém počtu leží uzel přesně ve středu drátu a napájení
+        uprostřed je symetrické. (NEC to má naopak — tam se budí střed
+        segmentu, takže mu vyhovuje lichý počet; převod si hlídá sám.)
         """
         lam = self.wavelength
         for w in self.wires:
             n = max(min_seg, int(round(per_wavelength * w.length / lam)))
             n = min(max_seg, n)
-            if force_odd and n % 2 == 0:
+            if force_even and n % 2:
                 n += 1
             w.nseg = n
 
