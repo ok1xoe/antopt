@@ -968,7 +968,9 @@ class App(ttk.Frame):
             f"Činitel odrazu     {g:.4f}  ({20 * math.log10(max(g, 1e-9)):.1f} dB)",
             "",
             f"Zisk               {r.gain_dbi:.2f} dBi   ({r.gain_dbi - 2.15:.2f} dBd)",
-            f"Předozadní poměr   {r.fb_db:.1f} dB",
+            f"Předozadní poměr   {r.fb_db:.1f} dB   (proti přesně opačnému směru)",
+            f"  totéž jako MMANA {r.fb_mmana_db:.1f} dB   (střední výkon v zadní"
+            f" oblasti ±120°/0–60°)",
             f"Poměr před/stranou {r.fs_db:.1f} dB",
             f"Elevace maxima     {r.elevation_deg:.1f} °",
             f"Azimut maxima      {r.azimuth_deg:.1f} °",

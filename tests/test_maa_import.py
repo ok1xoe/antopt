@@ -208,3 +208,34 @@ def test_spravny_polomer_da_spravnou_ucinnost():
     assert r.efficiency > 0.7, "3prvková Yagi z trubek nemá ztrácet výkon"
     assert r.gain_dbi > 11.0
     assert r.fb_db > 12.0
+
+
+# --------------------------------------------------------------------------
+# F/B: dvě různé definice, obě správně
+# --------------------------------------------------------------------------
+def test_fb_jako_mmana_je_prumer_zadni_oblasti():
+    """MMANA hlásí „F/B; Rear: Azim. 120 deg, Elev. 60 deg“ — to není zisk
+    v přesně opačném směru, ale střední výkon v celé zadní oblasti.
+    Na tribanderu OK1M dá první definice 6,1 dB a druhá 11,6 dB;
+    autorova MMANA hlásí 11,23 dB."""
+    from antopt.model import Model, Wire, Source, Ground
+    from antopt import analysis
+    W = [(-2.75, 5.50, 0.001, 24), (0.0, 5.16, 0.001, 22), (-0.26, 3.485, 0.002, 16),
+         (0.22, 2.53, 0.008, 12), (-2.20, 3.575, 0.002, 16), (-1.53, 2.552, 0.008, 12),
+         (1.198, 3.33, 0.002, 14), (0.693, 2.441, 0.008, 10), (2.44, 2.348, 0.008, 10)]
+    m = Model(name="tribander", freq_mhz=14.2, material="hliník")
+    m.wires = [Wire(x, -y, 12.0, x, y, 12.0, r, n) for x, y, r, n in W]
+    m.sources = [Source(1, 0.5, 1.0)]
+    m.ground = Ground.from_name("průměrná")
+    r = analysis.analyse(m)
+    assert r.fb_mmana_db > r.fb_db + 3.0
+    assert r.fb_mmana_db == pytest.approx(11.2, abs=1.5)   # MMANA: 11,23 dB
+    assert r.elevation_deg == pytest.approx(23.7, abs=1.0)  # MMANA: 23,7°
+    assert r.efficiency > 0.7
+
+
+def test_neznamy_typ_zeme_tise_nevypne_zem():
+    from antopt.model import Ground
+    assert Ground.from_name("dobrá").kind == "real"        # zkrácený název projde
+    with pytest.raises(ValueError):
+        Ground.from_name("nesmysl")

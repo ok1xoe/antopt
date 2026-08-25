@@ -184,6 +184,15 @@ class Ground:
     @classmethod
     def from_name(cls, name: str) -> "Ground":
         spec = GROUND_TYPES.get(name)
+        if spec is None and name:
+            # ať tichý překlep nevypne zem — gain by spadl o 5 dB bez varování
+            hits = [k for k in GROUND_TYPES if k.lower().startswith(name.lower())]
+            if len(hits) == 1:
+                spec = GROUND_TYPES[hits[0]]
+            elif name not in GROUND_TYPES:
+                raise ValueError(
+                    f"Neznámý typ země: {name!r}. Možnosti: "
+                    + ", ".join(GROUND_TYPES))
         if spec is None:
             return cls("free")
         if spec == "perfect":

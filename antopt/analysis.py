@@ -28,6 +28,7 @@ class Result:
     efficiency: float
     solution: Optional[Solution] = None
     perf: Optional[Performance] = None
+    fb_mmana_db: float = float("nan")
     engine: str = "vlastní"
     backend: Optional[dict] = None
 
@@ -53,6 +54,7 @@ def _analyse_own(model: Model, n_th: int = 91, n_ph: int = 181,
         gain_dbi=p.gain_dbi,
         fb_db=p.fb_db,
         fs_db=p.fs_db,
+        fb_mmana_db=getattr(p, "fb_mmana_db", float("nan")),
         elevation_deg=p.elevation_deg,
         azimuth_deg=p.max_phi_deg,
         beam_h_deg=p.beam_h_deg,

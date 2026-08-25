@@ -167,6 +167,11 @@ class Performance:
     beam_v_deg: float
     efficiency: float
     radiated_power: float
+    fb_mmana_db: float = float("nan")
+
+
+MMANA_REAR_AZ_DEG = 120.0     # poloviční šířka zadní oblasti v azimutu
+MMANA_REAR_EL_DEG = 60.0      # horní mez elevace zadní oblasti
 
 
 def _hemisphere_grid(ground: bool, n_th: int = 91, n_ph: int = 181):
@@ -206,6 +211,20 @@ def performance(sol: Solution, n_th: int = 91, n_ph: int = 181,
         gb = float(far_field(sol, np.array([th0]), np.array([ph_back])).gain_dbi[0])
     fb = gmax - gb
 
+    # F/B jako v MMANA: střední výkon v celé zadní oblasti, ne jeden bod.
+    # MMANA to hlásí jako „F/B; Rear: Azim. 120 deg, Elev. 60 deg“ a vyjde
+    # z toho číslo o několik dB lepší než porovnání s přesně opačným směrem —
+    # obojí je správně, jen se měří jinak.
+    rear_m = dphi_all >= (math.pi - math.radians(MMANA_REAR_AZ_DEG))
+    if grounded:
+        rear_m = rear_m & (TH >= math.radians(90.0 - MMANA_REAR_EL_DEG))
+    if np.any(rear_m):
+        w = np.sin(TH)[rear_m]
+        p = (10 ** (g[rear_m] / 10.0) * w).sum() / max(w.sum(), 1e-30)
+        fb_mmana = gmax - 10.0 * math.log10(max(p, 1e-30))
+    else:
+        fb_mmana = float("nan")
+
     # nejhorší (největší) postranní/zadní lalok mimo ±60° od maxima
     mask = dphi_all > math.radians(60.0)
     fs = gmax - float(np.max(g[mask])) if np.any(mask) else float("nan")
@@ -226,6 +245,7 @@ def performance(sol: Solution, n_th: int = 91, n_ph: int = 181,
         gain_dbi=gmax,
         gain_dbd=gmax - 2.15,
         fb_db=fb,
+        fb_mmana_db=fb_mmana,
         fs_db=fs,
         max_theta_deg=math.degrees(th0),
         max_phi_deg=math.degrees(ph0),
