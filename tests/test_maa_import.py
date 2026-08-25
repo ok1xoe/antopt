@@ -160,3 +160,51 @@ def test_spatny_pocet_dratu_se_nezahodi_tise():
     m, warn = fileio.from_maa(_maa_tapered_elements(n_wires_decl=9))
     assert len(m.wires) == 18, "polovina prvků by se tiše zahodila"
     assert len(go.find_elements(m)) == 3
+
+
+# --------------------------------------------------------------------------
+# jednotka poloměru — tichý zabiják antény
+# --------------------------------------------------------------------------
+def _maa_3el(rad):
+    els = [(-2.05, 10.60), (0.0, 10.10), (2.20, 9.60)]
+    L = ["*** MMANA ***", "OK1M 3el 20m", "14.200", str(len(els))]
+    for x, ln in els:
+        L.append(f"{x}, {-ln / 2:.4f}, 12.0, {x}, {ln / 2:.4f}, 12.0, {rad}, 0")
+    L += ["***Source***", "1", "w2c, 0.0, 1.0", "***Load***", "0",
+          "***G/H/M/R/AzEl/X***", "2, 5.0, 0, 50, 0, 0, 0", "***End***"]
+    return "\n".join(L)
+
+
+def test_zaporny_polomer_v_metrech_se_nedeli_tisicem():
+    """-0.0125 je trubka Ø 25 mm, ne drát 0,0125 mm.
+
+    Dělení tisícem z ní udělalo vodič tenčí než vlas — anténa pak ztratila
+    80 % výkonu ve ztrátách a zisk spadl o 9 dB, aniž by to cokoli hlásilo.
+    """
+    m, _ = fileio.from_maa(_maa_3el("-0.0125"))
+    assert m.wires[0].radius == pytest.approx(0.0125)
+
+
+def test_zaporny_polomer_v_mm_se_prepocte():
+    m, _ = fileio.from_maa(_maa_3el("-25.0"))
+    assert m.wires[0].radius == pytest.approx(0.025)
+
+
+def test_prumery_se_vzdy_ohlasi_ke_kontrole():
+    _, warn = fileio.from_maa(_maa_3el("0.0125"))
+    assert any("ZKONTROLUJ PRŮMĚRY" in w and "25 mm" in w for w in warn)
+
+
+def test_nesmyslne_tenky_vodic_se_ohlasi():
+    m, warn = fileio.from_maa(_maa_3el("0.00001"))
+    assert any("tenčí než 0,05 mm" in w for w in warn)
+    assert any("není reálný vodič" in msg for msg in m.validate())
+
+
+def test_spravny_polomer_da_spravnou_ucinnost():
+    from antopt import analysis
+    m, _ = fileio.from_maa(_maa_3el("-0.0125"))
+    r = analysis.analyse(m)
+    assert r.efficiency > 0.7, "3prvková Yagi z trubek nemá ztrácet výkon"
+    assert r.gain_dbi > 11.0
+    assert r.fb_db > 12.0

@@ -11,7 +11,7 @@ import math
 import re
 from typing import List, Optional, Tuple
 
-from .model import Model, Wire, Source, Load, Ground
+from .model import Model, Wire, Source, Load, Ground, _ranges as _ranges_txt
 
 
 # ==========================================================================
@@ -246,7 +246,8 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
     # Dráty se čtou, dokud řádky vypadají jako dráty — ne jen deklarovaný počet.
     # Kdyby se počet přečetl špatně, zbytek geometrie by se tiše zahodil.
     read = 0
-    n_taper = n_negr = 0
+    n_taper = n_negr = n_negr_mm = 0
+    thin: List[int] = []
     while i < len(lines):
         s = lines[i].strip()
         if not s or s.startswith("#"):
@@ -271,9 +272,20 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
             if int(ns) < 0:
                 n_taper += 1
         if r < 0:
-            n_negr += 1
-            r = abs(r) / 1000.0
-        model.wires.append(Wire(x1, y1, z1, x2, y2, z2, max(r, 1e-5), max(nseg, 0)))
+            # Záporný poloměr je v .maa značka „hodnota je v jiné jednotce“.
+            # Která to je, se pozná z velikosti: poloměr vodiče přes 0,5 m
+            # neexistuje, takže velké číslo jsou milimetry a malé metry.
+            # Slepé dělení tisícem udělalo z trubky 25 mm drát 0,0125 mm,
+            # což anténu zabilo — ztráty vodiče sežraly 80 % výkonu.
+            if abs(r) >= 0.5:
+                r = abs(r) / 1000.0
+                n_negr_mm += 1
+            else:
+                r = abs(r)
+                n_negr += 1
+        if r < 2.5e-5:                      # tenčí než 0,05 mm v průměru
+            thin.append(read + 1)
+        model.wires.append(Wire(x1, y1, z1, x2, y2, z2, max(r, 1e-6), max(nseg, 0)))
         read += 1
     if read != n_wires:
         warn.append(f"Hlavička hlásí {n_wires} drátů, v souboru jich je {read} "
@@ -339,9 +351,22 @@ def from_maa(text: str) -> Tuple[Model, List[str]]:
         warn.append("Soubor neobsahoval zdroj — vložen do středu prvního drátu.")
         model.sources.append(Source(0, 0.5, 1.0))
 
+    if n_negr_mm:
+        warn.append(f"{n_negr_mm}× poloměr zapsaný záporně, hodnota v milimetrech "
+                    f"— přepočteno na metry.")
     if n_negr:
-        warn.append(f"{n_negr}× poloměr zadaný záporně = v milimetrech, přepočteno "
-                    f"na metry. Jen jiná jednotka, průměry trubek zůstávají.")
+        warn.append(f"{n_negr}× poloměr zapsaný záporně, hodnota už v metrech "
+                    f"— vzato jak je.")
+    if model.wires:
+        d = sorted({round(w.radius * 2000, 2) for w in model.wires})
+        rng = f"{d[0]:g} mm" if len(d) == 1 else f"{d[0]:g} až {d[-1]:g} mm"
+        warn.append(f"ZKONTROLUJ PRŮMĚRY VODIČŮ: {rng}. "
+                    f"Musí sedět na skutečné trubky — špatná jednotka průměru "
+                    f"anténu zabije (ztráty vodiče), ale nic jiného to nepozná.")
+    if thin:
+        warn.append(f"Dráty {_ranges_txt(thin)} jsou tenčí než 0,05 mm. To není "
+                    f"reálný vodič — skoro všechen výkon se v něm spálí. "
+                    f"Skoro jistě je špatně jednotka poloměru v souboru.")
     if n_taper:
         warn.append(
             f"{n_taper}× nerovnoměrné dělení drátu na segmenty (MMANA -1/-2/-3) "

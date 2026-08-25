@@ -306,6 +306,12 @@ class Model:
             seg_len = w.length / max(w.nseg, 1)
             if w.radius <= 0:
                 msgs.append(f"Drát {i + 1}: poloměr musí být > 0.")
+            elif w.radius < 2.5e-5:
+                msgs.append(
+                    f"Drát {i + 1}: průměr {w.radius * 2000:.4g} mm — to není "
+                    f"reálný vodič, ztráty spálí skoro celý výkon. "
+                    f"Zkontroluj jednotku poloměru."
+                )
             elif seg_len < 4 * w.radius:
                 msgs.append(
                     f"Drát {i + 1}: segment ({seg_len * 1000:.1f} mm) je kratší než 4x poloměr "
