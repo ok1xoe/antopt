@@ -148,10 +148,10 @@ jobs:
         include:
           # dva běhy, protože křížový překlad PyInstaller neumí a obraz
           # z Apple Silicon by se na starším Macu s Intelem nespustil
-          - runner: macos-13
+          - runner: macos-15-intel
             arch: x86_64
             popis: Intel
-          - runner: macos-14
+          - runner: macos-15
             arch: arm64
             popis: Apple Silicon
     env:
