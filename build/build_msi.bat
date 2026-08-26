@@ -38,15 +38,13 @@ if not exist "%ROOT%\build\icon.ico" (
     echo   Chybi ikona - spoustim make_icon.py
     "%ROOT%\.build-venv\Scripts\python.exe" "%ROOT%\build\make_icon.py"
 )
-copy /y "%ROOT%\build\icon.ico" "%WORK%\icon.ico" >nul
-
 echo   Prochazim soubory aplikace...
 heat.exe dir "%DIST%" -cg AppFiles -dr INSTALLDIR -gg -g1 -sfrag -srd -sreg ^
     -var var.SourceDir -out "%WORK%\files.wxs" || (pause & exit /b 1)
 
 echo   Prekladam...
 if not exist "%WORK%\obj" mkdir "%WORK%\obj"
-candle.exe -nologo -dSourceDir="%DIST%" -out "%WORK%\obj\" ^
+candle.exe -nologo -dSourceDir="%DIST%" -dIconFile="%ROOT%\build\icon.ico" -out "%WORK%\obj\" ^
     "%WORK%\antopt.wxs" "%WORK%\files.wxs" || (pause & exit /b 1)
 
 echo   Sestavuji MSI...

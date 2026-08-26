@@ -38,9 +38,8 @@ jobs:
         shell: cmd
         run: |
           set PATH=%PATH%;C:\Program Files (x86)\WiX Toolset v3.14\bin
-          copy /y build\icon.ico build\windows\icon.ico
           heat.exe dir dist\AntOpt -cg AppFiles -dr INSTALLDIR -gg -g1 -sfrag -srd -sreg -var var.SourceDir -out build\windows\files.wxs
-          candle.exe -nologo -dSourceDir=dist\AntOpt -out build\windows\obj\ build\windows\antopt.wxs build\windows\files.wxs
+          candle.exe -nologo -dSourceDir=dist\AntOpt -dIconFile=%CD%\build\icon.ico -out build\windows\obj\ build\windows\antopt.wxs build\windows\files.wxs
           light.exe -nologo -b dist\AntOpt -sice:ICE60 -out dist\AntOpt-1.0.msi build\windows\obj\antopt.wixobj build\windows\obj\files.wixobj
 
       - uses: actions/upload-artifact@v4
