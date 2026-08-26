@@ -7,11 +7,16 @@
   ComponentGroupRef "AppFiles".
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <!-- Verzi předává candle.exe přepínačem -dVersion=x.y.z (viz build_msi.bat
+       a .github/workflows/build.yml). Bez něj se sestaví jako 1.0.0. -->
+  <?ifndef Version ?>
+  <?define Version = "1.0.0" ?>
+  <?endif ?>
   <Product Id="*"
            Name="AntOpt"
            Language="1029"
            Codepage="1250"
-           Version="1.0.0"
+           Version="$(var.Version)"
            Manufacturer="AntOpt"
            UpgradeCode="8f2c7a41-5d3e-4c76-9b1a-3e6d2f8c40b7">
 
@@ -24,6 +29,11 @@
              SummaryCodepage="1250" />
 
     <Media Id="1" Cabinet="antopt.cab" EmbedCab="yes" />
+
+    <!-- Nová verze při instalaci sama odstraní tu starší, jinak by MSI
+         u druhého vydání skončilo hláškou o už nainstalovaném produktu. -->
+    <MajorUpgrade DowngradeErrorMessage="Uz je nainstalovana novejsi verze AntOpt."
+                  Schedule="afterInstallInitialize" />
 
     <Directory Id="TARGETDIR" Name="SourceDir">
       <Directory Id="ProgramFiles64Folder">

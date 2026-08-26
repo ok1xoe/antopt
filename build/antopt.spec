@@ -13,6 +13,9 @@ import sys
 from PyInstaller.utils.hooks import collect_submodules
 
 ROOT = os.path.abspath(os.path.join(SPECPATH, os.pardir))
+# Verzi nastavuje sestavovací skript (u vydání se bere ze značky v*).
+# Bez ní se sestaví jako 1.0 — hodí se při ladění na vlastním počítači.
+VERZE = os.environ.get("ANTOPT_VERSION", "1.0")
 IS_MAC = sys.platform == "darwin"
 IS_WIN = os.name == "nt"
 
@@ -78,8 +81,8 @@ if IS_MAC:
         info_plist={
             "CFBundleName": "AntOpt",
             "CFBundleDisplayName": "AntOpt",
-            "CFBundleShortVersionString": "1.0",
-            "CFBundleVersion": "1.0",
+            "CFBundleShortVersionString": VERZE,
+            "CFBundleVersion": VERZE,
             "NSHighResolutionCapable": True,
             "LSMinimumSystemVersion": "11.0",
             "NSHumanReadableCopyright": "AntOpt — modelování a optimalizace antén",

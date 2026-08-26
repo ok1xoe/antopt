@@ -1,5 +1,6 @@
 @echo off
-rem Sestavi instalator AntOpt-1.0.msi pro Windows.
+rem Sestavi instalator AntOpt-<verze>.msi pro Windows.
+rem Verzi lze urcit promennou ANTOPT_VERSION, jinak je 1.0.0.
 rem
 rem Potrebuje WiX Toolset v3 (candle.exe, light.exe, heat.exe):
 rem   https://github.com/wixtoolset/wix3/releases
@@ -9,6 +10,7 @@ cd /d "%~dp0\.."
 set ROOT=%CD%
 set DIST=%ROOT%\dist\AntOpt
 set WORK=%ROOT%\build\windows
+if "%ANTOPT_VERSION%"=="" set ANTOPT_VERSION=1.0.0
 
 echo.
 echo ======================================================================
@@ -38,24 +40,26 @@ if not exist "%ROOT%\build\icon.ico" (
     echo   Chybi ikona - spoustim make_icon.py
     "%ROOT%\.build-venv\Scripts\python.exe" "%ROOT%\build\make_icon.py"
 )
-copy /y "%ROOT%\build\icon.ico" "%WORK%\icon.ico" >nul
-
 echo   Prochazim soubory aplikace...
 heat.exe dir "%DIST%" -cg AppFiles -dr INSTALLDIR -gg -g1 -sfrag -srd -sreg ^
     -var var.SourceDir -out "%WORK%\files.wxs" || (pause & exit /b 1)
 
+rem Ikona se kopiruje az za heat, aby ji heat nepribalil mezi soubory
+rem aplikace. light hleda relativni cesty vuci -b, tedy v %DIST%.
+copy /y "%ROOT%\build\icon.ico" "%DIST%\icon.ico" >nul
+
 echo   Prekladam...
 if not exist "%WORK%\obj" mkdir "%WORK%\obj"
-candle.exe -nologo -dSourceDir="%DIST%" -out "%WORK%\obj\" ^
+candle.exe -nologo -arch x64 -dSourceDir="%DIST%" -dVersion=%ANTOPT_VERSION% -out "%WORK%\obj\" ^
     "%WORK%\antopt.wxs" "%WORK%\files.wxs" || (pause & exit /b 1)
 
 echo   Sestavuji MSI...
-light.exe -nologo -b "%DIST%" -sice:ICE60 -out "%ROOT%\dist\AntOpt-1.0.msi" ^
+light.exe -nologo -b "%DIST%" -sice:ICE60 -out "%ROOT%\dist\AntOpt-%ANTOPT_VERSION%.msi" ^
     "%WORK%\obj\antopt.wixobj" "%WORK%\obj\files.wixobj" || (pause & exit /b 1)
 
 echo.
 echo ======================================================================
-echo   HOTOVO:  %ROOT%\dist\AntOpt-1.0.msi
+echo   HOTOVO:  %ROOT%\dist\AntOpt-%ANTOPT_VERSION%.msi
 echo ======================================================================
 echo.
 echo   Instaluje do Program Files, vyrobi zastupce v nabidce Start
