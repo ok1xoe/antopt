@@ -1,28 +1,102 @@
-# Sestaví AntOpt pro Windows i macOS bez toho, aby člověk oba systémy vlastnil.
+# Sestaví instalátory AntOpt pro Windows, macOS a Linux, aniž by člověk
+# všechny tři systémy vlastnil.
 #
-# Spustí se ručně (Actions → Sestavení aplikací → Run workflow) nebo
-# automaticky při označení verze značkou v*, kdy z výsledků rovnou vznikne
-# vydání (Release) ke stažení.
+# Spustí se
+#   • ručně (Actions → Sestavení aplikací → Run workflow),
+#   • po označení verze značkou v* (git tag v1.2.3 && git push --tags),
+#   • při vydání (Release) vytvořeném nebo publikovaném na GitHubu.
+#
+# V posledních dvou případech se hotové instalátory rovnou připojí
+# k vydání se stejnou značkou. Vzniká-li vydání i značka najednou,
+# spustí se běh dvakrát; skupina „concurrency“ ten dřívější zruší.
 name: Sestavení aplikací
 
 on:
   workflow_dispatch:
+    inputs:
+      verze:
+        description: "Verze v podobě x.y.z (nepovinné, jinak 0.0.0)"
+        required: false
+        default: ""
   push:
     tags: ["v*"]
   # Vydání založené přes web GitHubu nemusí spolehlivě vyvolat událost
-  # "push tags", proto se posloucha i na samotné vydání.
+  # "push tags", proto se poslouchá i na samotné vydání.
   release:
-    types: [published]
+    types: [published, created]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sestaveni-${{ github.event.release.tag_name || github.ref }}
+  cancel-in-progress: true
 
 jobs:
+  verze:
+    name: Verze
+    runs-on: ubuntu-latest
+    outputs:
+      # plná verze do názvů souborů (může mít i podobu 1.2.3-rc1)
+      verze: ${{ steps.zjisti.outputs.verze }}
+      # jen čísla — MSI ani RPM nic jiného nespolknou
+      cislo: ${{ steps.zjisti.outputs.cislo }}
+      znacka: ${{ steps.zjisti.outputs.znacka }}
+      vydani: ${{ steps.zjisti.outputs.vydani }}
+    steps:
+      - id: zjisti
+        shell: bash
+        env:
+          ZNACKA_VYDANI: ${{ github.event.release.tag_name }}
+          RUCNI_VERZE: ${{ inputs.verze }}
+        run: |
+          set -euo pipefail
+          if [ -n "$ZNACKA_VYDANI" ]; then
+              znacka="$ZNACKA_VYDANI"
+          elif [[ "$GITHUB_REF" == refs/tags/* ]]; then
+              znacka="${GITHUB_REF#refs/tags/}"
+          else
+              znacka=""
+          fi
+
+          if [ -n "$znacka" ]; then
+              verze="${znacka#v}"
+          elif [ -n "$RUCNI_VERZE" ]; then
+              verze="$RUCNI_VERZE"
+          else
+              verze="0.0.0"
+          fi
+
+          # z 1.2.3-rc1 udělá 1.2.3; chybějící složky doplní nulami
+          cislo="${verze%%-*}"
+          cislo="$(printf '%s' "$cislo" | tr -cd '0-9.')"
+          [ -n "${cislo//./}" ] || cislo="0"
+          while [ "$(printf '%s' "$cislo" | tr -cd '.' | wc -c)" -lt 2 ]; do
+              cislo="${cislo}.0"
+          done
+
+          {
+            echo "verze=$verze"
+            echo "cislo=$cislo"
+            echo "znacka=$znacka"
+            [ -n "$znacka" ] && echo "vydani=ano" || echo "vydani=ne"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Verze $verze (číslo $cislo), značka '${znacka:-žádná}'"
+
   windows:
-    name: Windows — exe + MSI
+    name: Windows — MSI
+    needs: verze
     runs-on: windows-latest
+    env:
+      ANTOPT_VERSION: ${{ needs.verze.outputs.cislo }}
+      NAZEV: AntOpt-${{ needs.verze.outputs.verze }}-windows-x64
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"      # z python.org, Tkinter má v sobě
+          architecture: x64
 
       - name: Knihovny
         run: |
@@ -38,25 +112,51 @@ jobs:
       - name: Kontrola sestavené aplikace
         run: dist\AntOpt\AntOpt.exe --selftest
 
+      # Na obrazu runneru WiX být nemusí (novější Windows image ho už
+      # nemají), takže si ho stáhneme sami — verze je pak vždycky stejná.
+      - name: WiX Toolset v3
+        shell: pwsh
+        run: |
+          $url = "https://github.com/wixtoolset/wix3/releases/download/wix3141rtm/wix314-binaries.zip"
+          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\wix.zip"
+          Expand-Archive "$env:RUNNER_TEMP\wix.zip" -DestinationPath "$env:RUNNER_TEMP\wix" -Force
+          "$env:RUNNER_TEMP\wix" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
       - name: Instalátor MSI
         shell: cmd
         run: |
-          set PATH=%PATH%;C:\Program Files (x86)\WiX Toolset v3.14\bin
-          heat.exe dir dist\AntOpt -cg AppFiles -dr INSTALLDIR -gg -g1 -sfrag -srd -sreg -var var.SourceDir -out build\windows\files.wxs
+          heat.exe dir dist\AntOpt -cg AppFiles -dr INSTALLDIR -gg -g1 -sfrag -srd -sreg -var var.SourceDir -out build\windows\files.wxs || exit /b 1
           rem Ikona se kopiruje az za heat, aby ji heat nepribalil mezi soubory
           rem aplikace. light hleda relativni cesty vuci -b, tedy v dist\AntOpt.
           copy /y build\icon.ico dist\AntOpt\icon.ico
-          candle.exe -nologo -arch x64 -dSourceDir=dist\AntOpt -dIconFile=%CD%\build\icon.ico -out build\windows\obj\ build\windows\antopt.wxs build\windows\files.wxs
-          light.exe -nologo -b dist\AntOpt -sice:ICE60 -out dist\AntOpt-1.0.msi build\windows\obj\antopt.wixobj build\windows\obj\files.wixobj
+          candle.exe -nologo -arch x64 -dSourceDir=dist\AntOpt -dVersion=%ANTOPT_VERSION% -out build\windows\obj\ build\windows\antopt.wxs build\windows\files.wxs || exit /b 1
+          light.exe -nologo -b dist\AntOpt -sice:ICE60 -out dist\%NAZEV%.msi build\windows\obj\antopt.wixobj build\windows\obj\files.wixobj || exit /b 1
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AntOpt-windows
-          path: dist/AntOpt-1.0.msi
+          name: ${{ env.NAZEV }}
+          path: dist/${{ env.NAZEV }}.msi
+          if-no-files-found: error
 
   macos:
-    name: macOS — app + DMG
-    runs-on: macos-latest
+    name: macOS — DMG (${{ matrix.popis }})
+    needs: verze
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # dva běhy, protože křížový překlad PyInstaller neumí a obraz
+          # z Apple Silicon by se na starším Macu s Intelem nespustil
+          - runner: macos-13
+            arch: x86_64
+            popis: Intel
+          - runner: macos-14
+            arch: arm64
+            popis: Apple Silicon
+    env:
+      ANTOPT_VERSION: ${{ needs.verze.outputs.verze }}
+      NAZEV: AntOpt-${{ needs.verze.outputs.verze }}-macos-${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -79,21 +179,129 @@ jobs:
 
       - name: Instalační obraz DMG
         run: |
+          set -euo pipefail
           STAGE="$(mktemp -d)/AntOpt"
           mkdir -p "$STAGE"
           cp -R dist/AntOpt.app "$STAGE/"
           ln -s /Applications "$STAGE/Aplikace"
-          hdiutil create -volname AntOpt -srcfolder "$STAGE" -ov -format UDZO -quiet dist/AntOpt-1.0.dmg
+          cat > "$STAGE/Čti mě.txt" <<'TXT'
+          AntOpt — modelování a optimalizace antén
+
+          Instalace: přetáhni AntOpt.app na odkaz Aplikace vedle.
+
+          Aplikace není podepsaná vývojářským certifikátem, takže ji macOS
+          napoprvé nepustí. Klepni na ni pravým tlačítkem a dej Otevřít —
+          v tom dialogu už tlačítko Otevřít je. Podruhé se spustí normálně.
+          TXT
+          hdiutil create -volname "AntOpt ${ANTOPT_VERSION}" -srcfolder "$STAGE" \
+              -ov -format UDZO -quiet "dist/${NAZEV}.dmg"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AntOpt-macos
-          path: dist/AntOpt-1.0.dmg
+          name: ${{ env.NAZEV }}
+          path: dist/${{ env.NAZEV }}.dmg
+          if-no-files-found: error
+
+  linux:
+    name: Linux — DEB + RPM
+    needs: verze
+    # záměrně starší obraz: sbalená aplikace pak běží i na distribucích
+    # se starší glibc, opačně by to nešlo
+    runs-on: ubuntu-22.04
+    env:
+      ANTOPT_VERSION: ${{ needs.verze.outputs.verze }}
+      CISLO: ${{ needs.verze.outputs.cislo }}
+      NAZEV: AntOpt-${{ needs.verze.outputs.verze }}-linux-x86_64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Systémové balíčky
+        run: |
+          sudo apt-get update
+          # rpm kvůli rpmbuildu, který fpm potřebuje; tcl/tk kvůli Tkinteru
+          sudo apt-get install -y --no-install-recommends rpm tcl8.6 tk8.6
+
+      - name: Knihovny
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller pillow
+          python -c "import tkinter; print('Tkinter', tkinter.TkVersion)"
+
+      - name: Ikona
+        run: python build/make_icon.py
+
+      - name: Aplikace
+        run: pyinstaller build/antopt.spec --noconfirm --distpath dist --workpath build/work
+
+      - name: Kontrola sestavené aplikace
+        run: dist/AntOpt/AntOpt --selftest
+
+      - name: fpm
+        run: |
+          sudo gem install --no-document fpm
+          fpm --version
+
+      - name: Obsah balíčku
+        run: |
+          set -euo pipefail
+          KOREN=build/pkgroot
+          rm -rf "$KOREN"
+          mkdir -p "$KOREN/opt/antopt" \
+                   "$KOREN/usr/bin" \
+                   "$KOREN/usr/share/applications" \
+                   "$KOREN/usr/share/icons/hicolor/512x512/apps"
+          cp -a dist/AntOpt/. "$KOREN/opt/antopt/"
+          ln -s /opt/antopt/AntOpt "$KOREN/usr/bin/antopt"
+          cp build/linux/antopt.desktop "$KOREN/usr/share/applications/antopt.desktop"
+          cp build/icon.png "$KOREN/usr/share/icons/hicolor/512x512/apps/antopt.png"
+
+      - name: Balíčky DEB a RPM
+        run: |
+          set -euo pipefail
+          spolecne=(
+            -s dir -C build/pkgroot
+            --name antopt
+            --version "$CISLO"
+            --iteration 1
+            --license MIT
+            --vendor AntOpt
+            --maintainer "AntOpt <ok1xoe@users.noreply.github.com>"
+            --url "https://github.com/${GITHUB_REPOSITORY}"
+            --description "AntOpt — modelování a optimalizace antén"
+            --category science
+            --force
+          )
+          fpm "${spolecne[@]}" -t deb --deb-no-default-config-files \
+              --package "dist/${NAZEV}.deb" .
+          fpm "${spolecne[@]}" -t rpm --rpm-digest sha256 \
+              --package "dist/${NAZEV}.rpm" .
+          ls -lh dist/*.deb dist/*.rpm
+
+      - name: Kontrola balíčků
+        run: |
+          set -euo pipefail
+          dpkg-deb --info "dist/${NAZEV}.deb" | sed -n '1,20p'
+          rpm -qip "dist/${NAZEV}.rpm"
+          # instalaci DEBu vyzkoušíme naostro, ať se pozná rozbitý obsah
+          sudo dpkg -i "dist/${NAZEV}.deb"
+          /usr/bin/antopt --selftest
+          sudo dpkg -r antopt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.NAZEV }}
+          path: |
+            dist/${{ env.NAZEV }}.deb
+            dist/${{ env.NAZEV }}.rpm
+          if-no-files-found: error
 
   vydani:
     name: Vydání
-    needs: [windows, macos]
-    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [verze, windows, macos, linux]
+    if: needs.verze.outputs.vydani == 'ano'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -101,13 +309,32 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: balicky
+
+      - name: Přehled souborů
+        run: find balicky -type f -printf '%p  (%s B)\n' | sort
+
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
+          tag_name: ${{ needs.verze.outputs.znacka }}
           files: balicky/**/*
+          fail_on_unmatched_files: true
+          # už napsaný popis vydání zůstane, poznámka se připojí pod něj
+          append_body: true
           body: |
+            ## Ke stažení
+
+            | Systém | Soubor |
+            | --- | --- |
+            | Windows 10/11 (64bit) | `AntOpt-${{ needs.verze.outputs.verze }}-windows-x64.msi` |
+            | macOS s Apple Silicon | `AntOpt-${{ needs.verze.outputs.verze }}-macos-arm64.dmg` |
+            | macOS s Intelem | `AntOpt-${{ needs.verze.outputs.verze }}-macos-x86_64.dmg` |
+            | Linux — Debian, Ubuntu | `AntOpt-${{ needs.verze.outputs.verze }}-linux-x86_64.deb` |
+            | Linux — Fedora, openSUSE | `AntOpt-${{ needs.verze.outputs.verze }}-linux-x86_64.rpm` |
+
             Aplikace nejsou podepsané vývojářským certifikátem.
 
             macOS: po prvním stažení klepni na aplikaci pravým tlačítkem
             a dej Otevřít. Windows: pod „Další informace“ v okně
-            SmartScreenu je tlačítko Přesto spustit.
+            SmartScreenu je tlačítko Přesto spustit. Linux: instaluj
+            přes `sudo apt install ./AntOpt-*.deb`, případně
+            `sudo dnf install ./AntOpt-*.rpm`.

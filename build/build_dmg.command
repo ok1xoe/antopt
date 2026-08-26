@@ -1,11 +1,13 @@
 #!/bin/bash
-# Zabalí hotovou AntOpt.app do instalačního obrazu AntOpt-1.0.dmg.
+# Zabalí hotovou AntOpt.app do instalačního obrazu AntOpt-<verze>.dmg.
+# Verzi lze určit proměnnou ANTOPT_VERSION, jinak je 1.0.
 # Poklepat ve Finderu. Nejdřív musí proběhnout build_macos.command.
 set -u
 cd "$(dirname "$0")/.." || exit 1
 ROOT="$(pwd)"
 APP="$ROOT/dist/AntOpt.app"
-DMG="$ROOT/dist/AntOpt-1.0.dmg"
+VERZE="${ANTOPT_VERSION:-1.0}"
+DMG="$ROOT/dist/AntOpt-$VERZE.dmg"
 
 echo
 echo "======================================================================"

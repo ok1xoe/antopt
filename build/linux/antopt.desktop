@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=AntOpt
+GenericName=Modelování antén
+Comment=Modelování a optimalizace antén
+Exec=/opt/antopt/AntOpt %f
+Icon=antopt
+Terminal=false
+Categories=Science;Engineering;Education;
+MimeType=application/x-mmana;application/x-nec;
+StartupNotify=true
+StartupWMClass=AntOpt
