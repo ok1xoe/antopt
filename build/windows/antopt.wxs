@@ -55,12 +55,7 @@
       </Component>
     </DirectoryRef>
 
-    <!--
-      Cestu k ikoně předává candle přes -dIconFile. Relativní cesta tady
-      nestačí: light.exe hledá soubory vůči základu zadanému přepínačem -b,
-      což je složka s aplikací, a tam ikona není.
-    -->
-    <Icon Id="AntOptIcon.exe" SourceFile="$(var.IconFile)" />
+    <Icon Id="AntOptIcon.exe" SourceFile="icon.ico" />
     <Property Id="ARPPRODUCTICON" Value="AntOptIcon.exe" />
     <Property Id="ARPNOMODIFY" Value="1" />
 
