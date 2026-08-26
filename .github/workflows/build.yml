@@ -9,6 +9,10 @@ on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+  # Vydání založené přes web GitHubu nemusí spolehlivě vyvolat událost
+  # "push tags", proto se posloucha i na samotné vydání.
+  release:
+    types: [published]
 
 jobs:
   windows:
@@ -99,6 +103,7 @@ jobs:
           path: balicky
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.event.release.tag_name || github.ref_name }}
           files: balicky/**/*
           body: |
             Aplikace nejsou podepsané vývojářským certifikátem.
